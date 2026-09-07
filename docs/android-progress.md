@@ -158,3 +158,62 @@ Moto G34.
 Android, crie uma `VkInstance` com `VK_KHR_android_surface`, chame
 `vkCreateAndroidSurfaceKHR`, registre resize/pause/resume e destrua a surface
 corretamente. Ela não deve carregar ReXGlue, runtime, XISO ou arquivos do jogo.
+
+## 2026-09-07 — Etapa 4: probe SDL3 + Vulkan Android
+
+**Dependências instaladas fora do repositório:** SDK command-line tools 19.0,
+Platform API 35, Build Tools 35.0.0, NDK 27.2.12479018 (r27c) e Ninja 1.13.2.
+O pacote oficial SDL3 3.2.16 Android AAR foi mantido em `/tmp`; não foi copiado
+nem commitado. Não foram instalados emulator, system images, Android Studio ou
+platform-tools.
+
+**Arquivos do probe:** `android/probe/probe.cpp` inicializa SDL3 e Vulkan, cria e
+recria a surface Android por `SDL_Vulkan_CreateSurface`, enumera GPUs/extensões
+e grava checkpoints no logcat e em `probe.log`. `ProbeActivity.java` herda a
+`org.libsdl.app.SDLActivity` oficial. O manifesto usa o package
+`com.cyberlym.project8probe`. O CMake liga somente SDL3, Vulkan, `log` e `android`.
+`build-apk.sh` configura Ninja/NDK, compila `libmain.so`, empacota classes em JAR
+para D8, gera o APK, alinha e assina com chave de debug local.
+
+**Erros encontrados e correções:**
+
+1. Ninja ausente: instalado somente o pacote `ninja` e restaurado `-G Ninja`.
+2. Macros Vulkan Android ausentes: definido `VK_USE_PLATFORM_ANDROID_KHR` antes
+   de `vulkan.h`.
+3. D8 recusou diretório: classes Java passaram a ser empacotadas em
+   `probe-classes.jar`.
+4. `aapt2` exigiu `package`: manifesto recebeu
+   `com.cyberlym.project8probe`.
+5. `apksigner` recusou manifesto protobuf: removido `--proto-format`.
+
+**Build:** a quinta tentativa autorizada compilou/linkou novamente e o build
+incremental final encontrou `ninja: no work to do`; D8, aapt2, zipalign e
+apksigner concluíram. O APK é
+`android/Project8VulkanProbe-arm64-v8a.apk`, com 3.371.623 bytes, package
+`com.cyberlym.project8probe`. A assinatura verifica v1, v2 e v3 com um signer.
+O `.apk.idsig` auxiliar fica ignorado.
+
+**Logging e recuperação:** `SDL_GetPrefPath` usa o armazenamento interno privado
+retornado por `SDL_GetAndroidInternalStoragePath`; o arquivo lógico é
+`files/probe.log` (na prática, sob o diretório privado do package). Cada linha é
+enviada a SDL/logcat e imediatamente flushed no arquivo; erros incluem o último
+checkpoint. Sem ADB, o arquivo pode ser visualizado pelo gerenciador de arquivos
+do Moto G34 em armazenamento interno privado somente se o app/gerenciador
+permitir acesso a `Android/data`; caso contrário, a próxima etapa deve adicionar
+um botão mínimo de compartilhamento/exportação, sem pedir armazenamento amplo.
+
+**Checkpoints esperados no Moto G34:** `ANDROID_ENTRY`, `SDL_INIT_OK`,
+`SDL_WINDOW_OK`, `VULKAN_INSTANCE_OK`, `ANDROID_SURFACE_OK`, `GPU_ENUM_OK` e
+`PROBE_READY`, além de `GPU name=`, `vendor_id=`, `device_id=`, `api=`, `driver=`
+e linhas `GPU_EXTENSION`. Ao pausar/minimizar, esperar
+`ANDROID_SURFACE_DESTROYED`; ao retornar, `ANDROID_SURFACE_RECREATED result=ok`.
+
+**Observação de empacotamento:** a inspeção `aapt dump badging` do APK manual
+mostrou permissões implícitas históricas porque o manifesto não contém uma tag
+`uses-sdk`; isso é um ponto a corrigir no próximo ciclo de empacotamento para
+declarar explicitamente minSdk 26/targetSdk 35. Nenhum novo build foi iniciado
+após essa observação, conforme o limite desta etapa.
+
+**Não implementado:** ReXGlue, runtime, game code, codegen, arquivos do jogo,
+launcher, touch customizado, Turnip/AdrenoTools, lifecycle do runtime, exportação
+do log e testes no Moto G34. Nenhum push foi feito.

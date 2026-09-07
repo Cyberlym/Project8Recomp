@@ -43,3 +43,5 @@ compile_commands.json
 
 # Release staging output
 /dist/
+/android/*.apk
+/android/*.apk.idsig
