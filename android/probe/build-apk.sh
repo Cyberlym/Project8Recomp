@@ -5,6 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 sdk_root="${ANDROID_SDK_ROOT:?Set ANDROID_SDK_ROOT to the installed SDK}"
 ndk_root="${ANDROID_NDK_ROOT:-${sdk_root}/ndk/27.2.12479018}"
 sdl3_aar="${SDL3_AAR:?Set SDL3_AAR to the official SDL3 Android AAR}"
+rexglue_sdk_root="${REXGLUE_SDK_ROOT:?Set REXGLUE_SDK_ROOT to the patched ReXGlue SDK}"
 build_root="${ANDROID_PROBE_BUILD_DIR:-/tmp/project8-android-probe-build}"
 aar_root="${build_root}/sdl-aar"
 app_root="${build_root}/app"
@@ -15,7 +16,8 @@ unzip -q -o "${sdl3_aar}" -d "${aar_root}"
 cmake -S "${repo_root}/android/probe" -B "${build_root}/native" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="${ndk_root}/build/cmake/android.toolchain.cmake" \
   -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 \
-  -DSDL3_AAR_ROOT="${aar_root}"
+  -DSDL3_AAR_ROOT="${aar_root}" \
+  -DREXGLUE_SDK_ROOT="${rexglue_sdk_root}"
 cmake --build "${build_root}/native" --parallel 2
 
 android_jar="${sdk_root}/platforms/android-35/android.jar"

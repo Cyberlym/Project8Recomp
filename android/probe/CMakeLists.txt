@@ -13,6 +13,11 @@ if(NOT EXISTS "${SDL3_AAR_ROOT}/prefab/modules/SDL3-Headers/include/SDL3/SDL.h")
   message(FATAL_ERROR "SDL3_AAR_ROOT must point to an extracted SDL3 AAR")
 endif()
 
+set(REXGLUE_SDK_ROOT "" CACHE PATH "Patched ReXGlue SDK root")
+if(NOT EXISTS "${REXGLUE_SDK_ROOT}/include/rex/ui/surface_android.h")
+  message(FATAL_ERROR "REXGLUE_SDK_ROOT must point to the patched ReXGlue SDK")
+endif()
+
 add_library(SDL3::Headers INTERFACE IMPORTED)
 set_target_properties(SDL3::Headers PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES
@@ -28,6 +33,9 @@ set_target_properties(SDL3::SDL3 PROPERTIES
 
 find_library(VULKAN_LIBRARY vulkan REQUIRED)
 
-add_library(main SHARED probe.cpp)
+add_library(main SHARED
+  probe.cpp
+  "${REXGLUE_SDK_ROOT}/src/ui/surface_android.cpp")
 target_compile_definitions(main PRIVATE SDL_MAIN_NEEDED=1)
+target_include_directories(main PRIVATE "${REXGLUE_SDK_ROOT}/include")
 target_link_libraries(main PRIVATE SDL3::SDL3 ${VULKAN_LIBRARY} log android)

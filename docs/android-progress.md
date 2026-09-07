@@ -412,3 +412,36 @@ autoriza downloads. Portanto ainda não está comprovado que `window_sdl.cpp` ou
 `ANativeWindow*` real e o tamanho físico pertence à 5B.2; criação Vulkan pelo
 presenter pertence à 5B.3; destruição/recriação em lifecycle físico pertence à
 5B.4.
+
+## 2026-09-07 — Etapa 5B.2: integração no probe para teste físico
+
+`AndroidNativeWindowSurface::Create(SDL_Window*)` passou a concentrar o caminho
+usado por `WindowSDL::CreateSurfaceImpl`: rejeita janela nula, consulta
+`SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER` por `SDL_GetWindowProperties` e rejeita
+`ANativeWindow*` nula. O wrapper mantém somente referências emprestadas. O
+tamanho continua vindo de `SDL_GetWindowSizeInPixels` e falha para retorno falso
+ou dimensão não positiva.
+
+O probe existente compila diretamente `surface_android.cpp` do checkout oficial
+v0.10.0 com os patches 0001, 0002 e 0003. Após `SDL_CreateWindow`, ele chama a
+mesma função `Create` usada por `WindowSDL` e só então reporta
+`SDL_WINDOW_REAL: OK`, `ANDROID_NATIVE_WINDOW: OK (pointer=...)` e
+`SURFACE_PIXEL_SIZE: largura x altura`. Ponteiro nulo ou tamanho inválido são
+falhas terminais e não geram `OK`.
+
+**Validação estática/build:** a série reaplicou limpa sobre
+`f5337cdc947ff6d4c4196737e2c807a48f2a1fc2`; o build incremental Android ARM64
+com Ninja `-j2` compilou o wrapper e o probe e gerou APK assinado. O símbolo de
+`AndroidNativeWindowSurface::Create` e o de `GetSizeImpl` estão em `libmain.so`;
+o hash da biblioteca dentro do APK é idêntico ao artefato do build. Os valores
+de ponteiro e tamanho ainda não são fatos até execução física no Moto G34.
+
+**Etapa 5B.3 bloqueada nesta sessão:** o caminho Android já existente do
+`VulkanPresenter` chama `vkCreateAndroidSurfaceKHR`, mas compilar e executar esse
+arquivo exige o grafo completo de `rexui`. Os submódulos oficiais necessários
+estão ausentes no checkout local, e downloads não foram autorizados. O probe
+continua usando seu caminho Vulkan comprovado e não foi apresentado como teste
+do presenter. Nenhuma segunda `VkInstance`, duplicação do presenter ou mudança
+de ownership foi adicionada. Pelo mesmo motivo, `tools/make_notice.py` não pôde
+revalidar o `NOTICE`: os textos de licença que ele consulta ficam nesses
+submódulos; o arquivo existente não foi alterado.

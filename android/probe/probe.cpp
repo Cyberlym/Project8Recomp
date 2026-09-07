@@ -3,6 +3,8 @@
 #include <SDL3/SDL_vulkan.h>
 #include <jni.h>
 
+#include <rex/ui/surface_android.h>
+
 #define VK_USE_PLATFORM_ANDROID_KHR 1
 #include <vulkan/vulkan.h>
 
@@ -25,6 +27,9 @@ std::string g_error;
 std::string g_gpu;
 std::string g_surface = "WAITING";
 std::string g_vulkan_evidence;
+std::string g_rexui_evidence =
+    "SDL_WINDOW_REAL: WAITING\nANDROID_NATIVE_WINDOW: WAITING\n"
+    "SURFACE_PIXEL_SIZE: NOT TESTED\n";
 std::vector<std::string> g_ok_checkpoints;
 
 void RefreshReport() {
@@ -37,7 +42,8 @@ void RefreshReport() {
     report += std::string(checkpoint) + ": " +
               (std::find(g_ok_checkpoints.begin(), g_ok_checkpoints.end(), checkpoint) != g_ok_checkpoints.end() ? "OK\n" : "WAITING\n");
   }
-  report += "\n" + g_vulkan_evidence + "\n" + g_gpu + "\nSURFACE: " + g_surface;
+  report += "\n" + g_rexui_evidence + "\n" + g_vulkan_evidence + "\n" +
+            g_gpu + "\nSURFACE: " + g_surface;
   if (!g_error.empty()) report += "\n\n" + g_error;
   g_report = report;
 }
@@ -231,6 +237,50 @@ int RunProbe() {
   }
   LogLine("SDL_WINDOW result=success window_valid=true");
   Checkpoint("SDL_WINDOW_OK");
+
+  auto rexui_surface = rex::ui::AndroidNativeWindowSurface::Create(window);
+  if (!rexui_surface) {
+    {
+      std::lock_guard<std::mutex> lock(g_state_mutex);
+      g_rexui_evidence =
+          "SDL_WINDOW_REAL: OK\nANDROID_NATIVE_WINDOW: FAILED\n"
+          "SURFACE_PIXEL_SIZE: NOT TESTED\n";
+    }
+    LogError("rexui could not obtain ANativeWindow from SDL_Window properties");
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+    CloseLog();
+    return 1;
+  }
+  uint32_t surface_width = 0;
+  uint32_t surface_height = 0;
+  if (!rexui_surface->GetSize(surface_width, surface_height)) {
+    {
+      std::lock_guard<std::mutex> lock(g_state_mutex);
+      g_rexui_evidence =
+          "SDL_WINDOW_REAL: OK\nANDROID_NATIVE_WINDOW: OK\n"
+          "SURFACE_PIXEL_SIZE: FAILED\n";
+    }
+    LogError("rexui Android surface did not return a valid physical size");
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+    CloseLog();
+    return 1;
+  }
+  {
+    char native_window_pointer[32];
+    std::snprintf(native_window_pointer, sizeof(native_window_pointer), "%p",
+                  static_cast<void*>(rexui_surface->window()));
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    g_rexui_evidence =
+        "SDL_WINDOW_REAL: OK\nANDROID_NATIVE_WINDOW: OK (pointer=" +
+        std::string(native_window_pointer) + ")\n"
+        "SURFACE_PIXEL_SIZE: " + std::to_string(surface_width) + " x " +
+        std::to_string(surface_height) + "\n";
+  }
+  LogLine("REXUI_ANDROID_NATIVE_WINDOW pointer=%p pixel_width=%u pixel_height=%u",
+          static_cast<void*>(rexui_surface->window()), surface_width,
+          surface_height);
 
   Uint32 extension_count = 0;
   const char* const* sdl_extensions = SDL_Vulkan_GetInstanceExtensions(&extension_count);

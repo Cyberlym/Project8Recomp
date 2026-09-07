@@ -3,8 +3,10 @@ new file mode 100644
 index 0000000..247ac3b
 --- /dev/null
 +++ b/include/rex/ui/surface_android.h
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,34 @@
 +#pragma once
++
++#include <memory>
 +
 +#include <rex/ui/surface.h>
 +
@@ -15,9 +17,8 @@ index 0000000..247ac3b
 +
 +class AndroidNativeWindowSurface final : public Surface {
 + public:
-+  AndroidNativeWindowSurface(SDL_Window* sdl_window,
-+                             ANativeWindow* native_window)
-+      : sdl_window_(sdl_window), native_window_(native_window) {}
++  static std::unique_ptr<AndroidNativeWindowSurface> Create(
++      SDL_Window* sdl_window);
 +
 +  TypeIndex GetType() const override { return kTypeIndex_AndroidNativeWindow; }
 +  ANativeWindow* window() const { return native_window_; }
@@ -26,6 +27,10 @@ index 0000000..247ac3b
 +  bool GetSizeImpl(uint32_t& width_out, uint32_t& height_out) const override;
 +
 + private:
++  AndroidNativeWindowSurface(SDL_Window* sdl_window,
++                             ANativeWindow* native_window)
++      : sdl_window_(sdl_window), native_window_(native_window) {}
++
 +  // SDL owns both handles. Window tears this wrapper down before
 +  // SDL_DestroyWindow.
 +  SDL_Window* sdl_window_;
@@ -64,12 +69,27 @@ new file mode 100644
 index 0000000..44afaac
 --- /dev/null
 +++ b/src/ui/surface_android.cpp
-@@ -0,0 +1,21 @@
+@@ -0,0 +1,36 @@
 +#include <SDL3/SDL_video.h>
 +
 +#include <rex/ui/surface_android.h>
 +
 +namespace rex::ui {
++
++std::unique_ptr<AndroidNativeWindowSurface>
++AndroidNativeWindowSurface::Create(SDL_Window* sdl_window) {
++  if (!sdl_window) {
++    return nullptr;
++  }
++  auto* native_window = static_cast<ANativeWindow*>(SDL_GetPointerProperty(
++      SDL_GetWindowProperties(sdl_window),
++      SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr));
++  if (!native_window) {
++    return nullptr;
++  }
++  return std::unique_ptr<AndroidNativeWindowSurface>(
++      new AndroidNativeWindowSurface(sdl_window, native_window));
++}
 +
 +bool AndroidNativeWindowSurface::GetSizeImpl(uint32_t& width_out,
 +                                             uint32_t& height_out) const {
@@ -101,20 +121,14 @@ index 2251429..6e2e1d4 100644
  #include <rex/ui/surface_win.h>
  #elif REX_PLATFORM_MAC
  #include <CoreFoundation/CoreFoundation.h>
-@@ -376,7 +378,17 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
+@@ -376,7 +378,11 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
    if (!sdl_window_) {
      return nullptr;
    }
 -#if REX_PLATFORM_WIN32
 +#if REX_PLATFORM_ANDROID
 +  if (allowed_types & Surface::kTypeFlag_AndroidNativeWindow) {
-+    auto* native_window = static_cast<ANativeWindow*>(SDL_GetPointerProperty(
-+        SDL_GetWindowProperties(sdl_window_),
-+        SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr));
-+    if (native_window) {
-+      return std::make_unique<AndroidNativeWindowSurface>(sdl_window_,
-+                                                          native_window);
-+    }
++    return AndroidNativeWindowSurface::Create(sdl_window_);
 +  }
 +#elif REX_PLATFORM_WIN32
    SDL_PropertiesID props = SDL_GetWindowProperties(sdl_window_);
