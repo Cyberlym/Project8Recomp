@@ -527,3 +527,54 @@ ao menos 13 submódulos diretamente usados e carrega os targets monolíticos de
 configuração. Nenhum download foi iniciado. Prosseguir requer autorização
 explícita para esse conjunto amplo e para compilar o `rexcore` monolítico, ou
 autorização para uma refatoração arquitetural de granularidade dos targets.
+
+## 2026-09-07 — Decisão de granularização para 5B.3
+
+**ARCHITECTURE DECISION: NOT SAFE.** A inspeção em nível de translation unit
+mostrou que uma extração exclusivamente CMake não consegue formar o caminho
+solicitado sem carregar partes substanciais dos targets atuais ou depender de
+eliminação de código morto pelo linker.
+
+O fluxo real precisa de `surface_android.cpp`, `window.cpp`, `window_sdl.cpp`,
+`windowed_app_context.cpp`, `windowed_app_context_sdl.cpp`, `presenter.cpp`,
+`renderdoc_api.cpp`, `vulkan_instance.cpp`, `vulkan_device.cpp`,
+`ui_samplers.cpp`, `vulkan_provider.cpp`, `vulkan_presenter.cpp`,
+`vulkan_submission_tracker.cpp` e `vulkan_util.cpp`. `window_sdl.cpp` também
+referencia `sdl_virtual_key.cpp`; `window.cpp` contém operações de `MenuItem` e
+inclui ImGui; portanto `menu_item.cpp` e ImGui permanecem no fechamento seguro
+do objeto.
+
+Há acoplamentos adicionais dentro das próprias translation units:
+`VulkanProvider::CreatePresenter` e `CreateImmediateDrawer` estão no mesmo
+`vulkan_provider.cpp`. Assim, o objeto referencia `vulkan_immediate_drawer.cpp`,
+que por sua vez exige `vulkan_upload_buffer_pool.cpp`,
+`graphics_upload_buffer_pool.cpp` e `immediate_drawer.cpp`. O
+`VulkanPresenter` também inicializa recursos surface-independent completos; não
+há uma entrada pública limitada à criação da `VkSurfaceKHR`.
+
+No núcleo, cvars/logging exigem `cvar.cpp`, `logging.cpp`, CLI11, toml++, spdlog
+e platform env; janela/contexto exigem threading; Vulkan instance exige dynlib e
+RenderDoc. Determinar e extrair um núcleo fechado requer separar fontes comuns e
+fontes de plataforma hoje pertencentes a `rexcore`. Isso toca diretamente o
+invariante documentado em `rexglue_link_audit.cmake`: globals de cvar/logging
+devem existir em uma única cópia, pois duplicação já causou registros duplicados
+e falha no encerramento.
+
+O desenho mínimo tecnicamente coerente teria dois targets internos de objetos —
+fundação core para apresentação e UI/presenter — consumidos tanto pelos targets
+normais quanto pelo probe. Porém, para evitar referências indevidas, também
+exigiria mover métodos entre translation units, reorganizar `rexcore` e `rexui`,
+propagar exatamente PCH/defines/includes/link interfaces e atualizar a auditoria
+de unicidade. Isso não é uma pequena refatoração CMake e não permite demonstrar
+agora que Windows, Linux e macOS continuam semanticamente idênticos.
+
+Uma simples opção Android opt-in apenas esconderia dependências e manteria os
+acoplamentos; um target paralelo com listas copiadas deixaria de provar os mesmos
+objetos; depender de `--gc-sections` não prova fechamento de símbolos nem
+preserva o modelo de build. As três alternativas foram rejeitadas.
+
+**Resultado:** nenhum patch 0004, submódulo, build ou APK 5B.3 foi produzido.
+A dependência externa poderia cair de 13 para aproximadamente oito pelo exame de
+includes, mas essa estimativa não é uma prova de link e depende da refatoração
+C++/OBJECT descrita acima. Logo o critério de redução comprovada e preservação
+integral de desktop não foi satisfeito.
