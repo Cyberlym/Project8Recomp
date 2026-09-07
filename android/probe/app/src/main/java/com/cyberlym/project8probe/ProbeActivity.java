@@ -7,6 +7,9 @@ import android.graphics.Color;
 import android.os.Bundle;
 import android.os.Handler;
 import android.view.Gravity;
+import android.view.Surface;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
@@ -25,9 +28,30 @@ public final class ProbeActivity extends SDLActivity {
     };
     private static native String nativeGetReport();
     private static native String nativeGetLog();
+    private static native void nativeActivityCreated();
+    private static native void nativeActivityDestroyed();
+    private static native void nativeAndroidSurfaceCreated(int identity);
+    private static native void nativeAndroidSurfaceDestroyed(int identity);
+    private static native boolean nativePrepareActivityRecreate();
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        nativeActivityCreated();
+        SurfaceView sdlSurface = (SurfaceView)mSurface;
+        SurfaceHolder holder = sdlSurface.getHolder();
+        holder.addCallback(new SurfaceHolder.Callback() {
+            @Override public void surfaceCreated(SurfaceHolder callbackHolder) {
+                recordSurface(callbackHolder);
+            }
+            @Override public void surfaceChanged(SurfaceHolder callbackHolder, int format, int width, int height) {
+                recordSurface(callbackHolder);
+            }
+            @Override public void surfaceDestroyed(SurfaceHolder callbackHolder) {
+                Surface surface = callbackHolder.getSurface();
+                nativeAndroidSurfaceDestroyed(surface != null ? System.identityHashCode(surface) : 0);
+            }
+        });
+        recordSurface(holder);
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL); panel.setPadding(20, 16, 20, 16);
         panel.setBackgroundColor(0xcc101010);
@@ -37,7 +61,22 @@ public final class ProbeActivity extends SDLActivity {
         Button export = new Button(this); export.setText("EXPORT LOG"); export.setOnClickListener(v -> exportLog());
         Button copy = new Button(this); copy.setText("COPY REPORT"); copy.setOnClickListener(v -> copyReport());
         buttons.addView(export, new LinearLayout.LayoutParams(0, -2, 1)); buttons.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
-        panel.addView(buttons); addContentView(panel, new ViewGroup.LayoutParams(-1, -1)); handler.post(refresh);
+        panel.addView(buttons);
+        Button recreateSurface = new Button(this); recreateSurface.setText("RECREATE ACTIVITY / SURFACE");
+        recreateSurface.setOnClickListener(v -> recreateActivityForSurfaceTest());
+        panel.addView(recreateSurface, new LinearLayout.LayoutParams(-1, -2));
+        addContentView(panel, new ViewGroup.LayoutParams(-1, -1)); handler.post(refresh);
+    }
+    private void recordSurface(SurfaceHolder holder) {
+        Surface surface = holder.getSurface();
+        if (surface != null && surface.isValid()) {
+            nativeAndroidSurfaceCreated(System.identityHashCode(surface));
+        }
+    }
+    private void recreateActivityForSurfaceTest() {
+        if (nativePrepareActivityRecreate()) {
+            recreate();
+        }
     }
     private void copyReport() {
         android.content.ClipboardManager clipboard = (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
@@ -54,5 +93,10 @@ public final class ProbeActivity extends SDLActivity {
                 out.write(nativeGetLog().getBytes(StandardCharsets.UTF_8));
             } catch (Exception ignored) { }
         }
+    }
+    @Override protected void onDestroy() {
+        handler.removeCallbacks(refresh);
+        nativeActivityDestroyed();
+        super.onDestroy();
     }
 }

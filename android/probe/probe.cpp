@@ -57,6 +57,21 @@ uint32_t g_surface_create_count = 0;
 uint32_t g_surface_destroy_count = 0;
 uint32_t g_vk_surface_create_count = 0;
 uint32_t g_vk_surface_destroy_count = 0;
+uint32_t g_activity_create_count = 0;
+uint32_t g_activity_destroy_count = 0;
+uint32_t g_activity_recreate_request_count = 0;
+uint32_t g_android_surface_create_count = 0;
+uint32_t g_android_surface_destroy_count = 0;
+int32_t g_first_android_surface_identity = 0;
+int32_t g_current_android_surface_identity = 0;
+bool g_android_surface_valid = false;
+uintptr_t g_first_native_window_handle = 0;
+uintptr_t g_current_native_window_handle = 0;
+uintptr_t g_destroyed_native_window_handle = 0;
+uintptr_t g_first_vk_surface_handle = 0;
+uintptr_t g_current_vk_surface_handle = 0;
+uintptr_t g_destroyed_vk_surface_handle = 0;
+bool g_activity_recreate_enabled = false;
 bool g_android_entry = false;
 bool g_sdl_window_attempted = false;
 bool g_sdl_window_real = false;
@@ -65,6 +80,13 @@ const char* Status(bool attempted, bool value) {
   return !attempted ? "NOT TESTED" : value ? "OK" : "FAILED";
 }
 const char* Boolean(bool value) { return value ? "true" : "false"; }
+
+std::string HexHandle(uintptr_t handle) {
+  char value[2 + sizeof(uintptr_t) * 2 + 1];
+  std::snprintf(value, sizeof(value), "0x%llx",
+                static_cast<unsigned long long>(handle));
+  return value;
+}
 
 void RefreshReportLocked() {
   g_report = "Project 8 ReXGlue Android Stage 5 Probe\n\n";
@@ -196,7 +218,47 @@ void RefreshReportLocked() {
               std::to_string(g_vk_surface_create_count);
   g_report += "\nLIFECYCLE_VK_SURFACE_DESTROY_COUNT: " +
               std::to_string(g_vk_surface_destroy_count);
-  g_report += "\nLIFECYCLE_5B4: DEVICE TEST REQUIRED\n";
+  g_report += "\nLIFECYCLE_ACTIVITY_CREATE_COUNT: " +
+              std::to_string(g_activity_create_count);
+  g_report += "\nLIFECYCLE_ACTIVITY_DESTROY_COUNT: " +
+              std::to_string(g_activity_destroy_count);
+  g_report += "\nLIFECYCLE_RECREATE_REQUEST_COUNT: " +
+              std::to_string(g_activity_recreate_request_count);
+  g_report += "\nLIFECYCLE_ANDROID_SURFACE_CREATE_COUNT: " +
+              std::to_string(g_android_surface_create_count);
+  g_report += "\nLIFECYCLE_ANDROID_SURFACE_DESTROY_COUNT: " +
+              std::to_string(g_android_surface_destroy_count);
+  g_report += "\nLIFECYCLE_ANDROID_SURFACE_IDENTITY_FIRST: " +
+              std::to_string(g_first_android_surface_identity);
+  g_report += "\nLIFECYCLE_ANDROID_SURFACE_IDENTITY_CURRENT: " +
+              std::to_string(g_current_android_surface_identity);
+  g_report += "\nLIFECYCLE_NATIVE_WINDOW_FIRST: " +
+              HexHandle(g_first_native_window_handle);
+  g_report += "\nLIFECYCLE_NATIVE_WINDOW_DESTROYED: " +
+              HexHandle(g_destroyed_native_window_handle);
+  g_report += "\nLIFECYCLE_NATIVE_WINDOW_CURRENT: " +
+              HexHandle(g_current_native_window_handle);
+  g_report += "\nLIFECYCLE_VK_SURFACE_FIRST: " +
+              HexHandle(g_first_vk_surface_handle);
+  g_report += "\nLIFECYCLE_VK_SURFACE_DESTROYED: " +
+              HexHandle(g_destroyed_vk_surface_handle);
+  g_report += "\nLIFECYCLE_VK_SURFACE_CURRENT: " +
+              HexHandle(g_current_vk_surface_handle);
+  const bool recreation_complete =
+      g_activity_recreate_request_count != 0 && g_activity_create_count >= 2 &&
+      g_activity_destroy_count >= 1 && g_android_surface_create_count >= 2 &&
+      g_android_surface_destroy_count >= 1 &&
+      g_first_android_surface_identity != 0 &&
+      g_current_android_surface_identity != 0 &&
+      g_first_android_surface_identity != g_current_android_surface_identity &&
+      g_surface_create_count >= 2 && g_surface_destroy_count >= 1 &&
+      g_vk_surface_create_count >= 2 && g_vk_surface_destroy_count >= 1 &&
+      g_current_native_window_handle != 0 && g_current_vk_surface_handle != 0;
+  g_report += "\nLIFECYCLE_SURFACE_RECREATION: ";
+  g_report += recreation_complete
+                  ? "OK\n"
+                  : g_activity_recreate_request_count != 0 ? "FAILED\n"
+                                                            : "DEVICE TEST REQUIRED\n";
   if (!g_error.empty()) {
     g_report += "\nERROR: " + g_error + "\n";
   }
@@ -273,6 +335,15 @@ bool SDLCALL LifecycleEventWatch(void*, SDL_Event* event) {
 }
 
 int RunProbe() {
+  const bool recreate_hint_set =
+      SDL_SetHint(SDL_HINT_ANDROID_ALLOW_RECREATE_ACTIVITY, "1");
+  {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    g_activity_recreate_enabled =
+        recreate_hint_set && SDL_GetHintBoolean(
+                                 SDL_HINT_ANDROID_ALLOW_RECREATE_ACTIVITY,
+                                 false);
+  }
   rex::ui::SetAndroidPresentationDiagnosticCallback(
       rexglue_android_presentation_diagnostic);
   {
@@ -406,6 +477,12 @@ extern "C" void rexglue_android_presentation_diagnostic(
         g_surface_width = width;
         g_surface_height = height;
         ++g_surface_create_count;
+        if (handle != 0) {
+          if (g_first_native_window_handle == 0) {
+            g_first_native_window_handle = handle;
+          }
+          g_current_native_window_handle = handle;
+        }
         break;
       case rex::ui::AndroidPresentationDiagnosticEvent::kVulkanPresenterEnter:
         g_presenter_entered = true;
@@ -415,14 +492,24 @@ extern "C" void rexglue_android_presentation_diagnostic(
         g_surface_result = result;
         g_surface_handle = handle;
         ++g_vk_surface_create_count;
+        if (handle != 0) {
+          if (g_first_vk_surface_handle == 0) {
+            g_first_vk_surface_handle = handle;
+          }
+          g_current_vk_surface_handle = handle;
+        }
         break;
       case rex::ui::AndroidPresentationDiagnosticEvent::kSurfaceDestroyed:
         g_surface_created = false;
         g_native_window_valid = false;
+        g_destroyed_native_window_handle = handle;
+        g_current_native_window_handle = 0;
         ++g_surface_destroy_count;
         break;
       case rex::ui::AndroidPresentationDiagnosticEvent::kVulkanSurfaceDestroyed:
         g_surface_handle = 0;
+        g_destroyed_vk_surface_handle = handle;
+        g_current_vk_surface_handle = 0;
         ++g_vk_surface_destroy_count;
         break;
     }
@@ -478,4 +565,62 @@ Java_com_cyberlym_project8probe_ProbeActivity_nativeGetLog(JNIEnv* env, jobject)
   }
   std::fclose(file);
   return env->NewStringUTF(contents.c_str());
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_cyberlym_project8probe_ProbeActivity_nativeActivityCreated(JNIEnv*, jclass) {
+  std::lock_guard<std::mutex> lock(g_state_mutex);
+  ++g_activity_create_count;
+  RefreshReportLocked();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_cyberlym_project8probe_ProbeActivity_nativeActivityDestroyed(JNIEnv*, jclass) {
+  std::lock_guard<std::mutex> lock(g_state_mutex);
+  ++g_activity_destroy_count;
+  RefreshReportLocked();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_cyberlym_project8probe_ProbeActivity_nativeAndroidSurfaceCreated(
+    JNIEnv*, jclass, jint identity) {
+  std::lock_guard<std::mutex> lock(g_state_mutex);
+  if (!g_android_surface_valid ||
+      g_current_android_surface_identity != identity) {
+    ++g_android_surface_create_count;
+  }
+  if (g_first_android_surface_identity == 0) {
+    g_first_android_surface_identity = identity;
+  }
+  g_current_android_surface_identity = identity;
+  g_android_surface_valid = true;
+  RefreshReportLocked();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_cyberlym_project8probe_ProbeActivity_nativeAndroidSurfaceDestroyed(
+    JNIEnv*, jclass, jint identity) {
+  std::lock_guard<std::mutex> lock(g_state_mutex);
+  if (g_android_surface_valid) {
+    ++g_android_surface_destroy_count;
+  }
+  if (identity != 0) {
+    g_current_android_surface_identity = identity;
+  }
+  g_android_surface_valid = false;
+  RefreshReportLocked();
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_cyberlym_project8probe_ProbeActivity_nativePrepareActivityRecreate(
+    JNIEnv*, jclass) {
+  std::lock_guard<std::mutex> lock(g_state_mutex);
+  if (!g_activity_recreate_enabled) {
+    g_error = "SDL activity recreation hint is not enabled";
+    RefreshReportLocked();
+    return JNI_FALSE;
+  }
+  ++g_activity_recreate_request_count;
+  RefreshReportLocked();
+  return JNI_TRUE;
 }

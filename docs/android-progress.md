@@ -760,3 +760,86 @@ preflight Bionic e a sequência observacional de 5B.4 continuam **DEVICE TEST
 REQUIRED**. `Runtime::Setup()` permanece **NOT TESTED** porque atravessa de
 imediato memória virtual guest e fault handling; avançar nisso exige a decisão
 específica da próxima subetapa, não uma chamada exploratória neste probe.
+
+## 2026-09-07 — Evidência física consolidada da Etapa 5
+
+O APK consolidado foi instalado e executado no Moto G34. O caminho real
+`AndroidNativeWindowSurface -> rexui -> VulkanProvider -> VulkanPresenter ->
+vkCreateAndroidSurfaceKHR` retornou `VK_SUCCESS`, produziu uma
+`VkSurfaceKHR` válida e atingiu `REXUI_5B3_READY: OK`. A janela SDL e a
+`ANativeWindow` eram válidas e a dimensão física retornada em runtime foi
+720 x 1600. Assim, a Etapa 5B.3 passa de **BUILD VERIFIED** para **DEVICE
+VERIFIED**.
+
+O backend Android/AArch64 de fibers executou no aparelho as 64 trocas de
+contexto e validou criação, entrada, yield, resume, retorno e estado através de
+múltiplas trocas. O preflight também comprovou AArch64, page size de 4096,
+`mmap`, transições `RW -> R -> RX -> RW` sem solicitar RWX, shared memory,
+threads, mutex/condition variable, relógio monotônico e filesystem privado.
+Esses itens são **DEVICE VERIFIED**. `rexcore` e `rexruntime` permanecem **BUILD
+VERIFIED**, e a construção/destruição de um objeto `Runtime` sem game code foi
+**DEVICE VERIFIED** por `REXRUNTIME_OBJECT_NO_GAME: OK`.
+
+Cinco ciclos físicos de Home/retorno e lock/unlock produziram cinco pares de
+eventos SDL de background e foreground. Essa parte da Etapa 5B.4 é **DEVICE
+VERIFIED**. No mesmo teste, os contadores permaneceram em uma criação e zero
+destruições tanto para o wrapper rexui quanto para a surface Vulkan. Portanto,
+o aparelho preservou a surface nesses ciclos; destruição/recriação continua
+**NOT EXERCISED**, não falhou e não foi inferida a partir dos eventos de
+background.
+
+`Runtime::Setup()` continua **NOT TESTED** até a análise de sua fronteira com
+guest virtual memory e fault handling. Nenhum resultado acima depende de ISO,
+`default.xex`, codegen ou game code.
+
+### Fronteira de `Runtime::Setup()`
+
+A sobrecarga simples de `Runtime::Setup(RuntimeConfig)` não exige diretamente
+generated code nem `PPCImageInfo`; a sobrecarga seguinte é que registra a tabela
+de funções recompiladas. Porém, a chamada simples já instala os handlers SEH
+globais, cria o mapa de memória guest, os heaps Xbox, o `MMIOHandler`, o
+`FunctionDispatcher`, VFS e `KernelState`. `Memory::Initialize()` reserva um
+backing de `0x120000000` bytes (4,5 GiB binários de espaço virtual, arredondados
+à granularidade do host), tenta views em bases fixas e pré-mapeia a memória
+física guest. Isso não equivale a comprometer fisicamente todo o backing, embora
+o pre-map físico possa ter custo real próprio.
+
+`Runtime::Shutdown()` destrói kernel, dispatcher, VFS e memória; o destrutor de
+`Memory` remove o `MMIOHandler`, restaura o handler de exceção usado por MMIO e
+desfaz mappings. Contudo, `initialize_seh()` instala handlers de SIGSEGV,
+SIGBUS, SIGFPE e SIGILL por processo, e o SDK v0.10.0 não fornece teardown nem
+restaura os handlers anteriores no `Runtime::Shutdown()`. Portanto o contrato
+não oferece um smoke test isolado que execute `Setup()` e reverta integralmente
+seus efeitos globais.
+
+Decisão: **REXRUNTIME_SETUP: DEFERRED TO GAME-RUNTIME INTEGRATION**. Embora a
+API básica seja estruturalmente chamável sem módulos gerados, validá-la de forma
+correta atravessa layout virtual guest e semântica de fault handling e não tem
+teardown completo. Isso pertence à integração do runtime guest e não bloqueia a
+infraestrutura Android independente de jogo validada na Etapa 5.
+
+### Prova controlada de recriação
+
+`Activity.recreate()` foi escolhido para o APK de diagnóstico porque o SDL3
+vendorizado oferece explicitamente `SDL_ANDROID_ALLOW_RECREATE_ACTIVITY`. O
+probe habilita esse hint antes da inicialização do contexto SDL e só então
+permite o botão opt-in. O fluxo não chama destrutores Vulkan manualmente:
+`SDLActivity.onDestroy()` envia o quit SDL, o loop rexui executa seu teardown
+normal, e o novo `onCreate()` cria a nova Activity, `SurfaceView`, janela rexui
+e presenter. Callbacks reais de `SurfaceHolder` registram criação, destruição e
+a identidade do objeto Java `Surface`; os callbacks opt-in já existentes registram os
+handles reais de `ANativeWindow` e `VkSurfaceKHR` antes e depois. O teste ainda
+é **DEVICE TEST REQUIRED**.
+
+O APK incremental dessa prova está em
+`android/Project8VulkanProbe-arm64-v8a.apk`, com 24.351.435 bytes e SHA-256
+`eb9ce249882cfb48e99f28f73b035498ff1545968850a19f363ed5ea89942fd6`.
+Ele contém somente a ABI `arm64-v8a`, package
+`com.cyberlym.project8probe`, minSdk 26, targetSdk 35 e as bibliotecas
+`libmain.so`, `librexruntime.so` e `libSDL3.so`. A assinatura v2/v3 foi
+validada. Os ELFs são AArch64, `libmain.so` possui `DT_NEEDED` real para
+`librexruntime.so`, e não há dependência dinâmica de X11, XCB ou Wayland.
+
+A Etapa 5 ainda não é marcada como completa neste ponto: falta executar uma
+vez o botão `RECREATE ACTIVITY / SURFACE` no Moto G34 e conferir o resultado
+real `LIFECYCLE_SURFACE_RECREATION`.
