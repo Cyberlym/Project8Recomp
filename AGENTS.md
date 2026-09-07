@@ -153,6 +153,16 @@ autorização prevalecem, inclusive a proibição de builds na etapa de auditori
   C++ grande, use paralelismo conservador, inicialmente `-j2`.
 - Antes de push ou abertura de PR, inspecione os gatilhos de CI: builds remotos
   automáticos também estão sujeitos à restrição de custo e autorização.
+- Antes de qualquer push, verifique se a operação pode disparar GitHub Actions
+  ou qualquer CI automático. Se puder iniciar build, testes, packaging, codegen
+  ou outro workflow potencialmente caro, informe quais workflows seriam
+  disparados e peça autorização do usuário antes do push.
+- Nunca deixe um workflow caro rodando por acidente. Se algum CI for iniciado
+  involuntariamente durante uma etapa que não autoriza builds/testes, tente
+  cancelá-lo imediatamente e registre o ocorrido em `docs/android-progress.md`.
+- Prefira commits locais durante auditorias e desenvolvimento intermediário.
+  Push para origin deve acontecer somente quando for necessário ou quando o
+  usuário autorizar explicitamente.
 - Não implemente UI bonita, Compose, Turnip ou otimizações antes do runtime
   básico Android funcionar.
 - Não baixe, solicite ou faça commit de ISOs, `default.xex`, assets do jogo,
