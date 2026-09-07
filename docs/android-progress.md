@@ -631,3 +631,48 @@ O gate de NOTICE foi executado, mas não pôde gerar uma comparação: ele exige
 também os textos de Snappy, Tracy e volk. Essas dependências não pertencem ao
 build 5B.3 selecionado e não foram baixadas apenas para satisfazer o gerador;
 o `NOTICE` existente não foi alterado.
+
+## 2026-09-07 — Etapa 5B.3: backend de fibers Android/AArch64
+
+**Causa raiz comprovada:** o backend POSIX de `rex::thread::Fiber` selecionado
+no Android chama `getcontext`, `makecontext` e `swapcontext`, funções ausentes
+no Bionic/NDK. O contrato do SDK usa somente essas operações e os campos
+`uc_stack`/`uc_link`; nenhum call site acessa registradores ou o layout interno
+de `mcontext`. A stack host é um `std::vector<uint8_t>` de no mínimo 256 KiB no
+caminho de runtime, e o entrypoint/argumento são transportados pelo objeto
+`Fiber` em TLS, não pelos argumentos variádicos de `makecontext`.
+
+O patch `0009-android-libucontext-fibers.patch` adiciona como submódulo apenas
+para Android a libucontext oficial 1.5.2, commit
+`49e671dd52ff6791295d8161ad3b6da7dc5f6f9d`, sob licença ISC. O backend usa os
+símbolos prefixados `libucontext_*` e o tipo freestanding próprio da biblioteca;
+não substitui APIs globalmente. AArch64 salva/restaura GPRs, SP, PC e q8–q15.
+O ReXGlue restaura explicitamente o FPCR do guest antes do switch. A biblioteca
+não preserva signal mask no modo rápido, mas o código ReXGlue alcançável por
+fibers não altera a mask entre contextos; os usos encontrados configuram masks
+de handlers, sem `sigprocmask`/`pthread_sigmask` no runtime do SDK.
+
+Não existe backend AArch64 alternativo no ReXGlue v0.10.0, e a árvore oficial
+atual do Xenia não contém implementação de fibers reutilizável. Uma
+implementação manual teria maior risco de corrupção de contexto e foi
+descartada. Linux desktop continua usando ucontext da libc; Windows e macOS
+permanecem nos ramos existentes.
+
+**Validação de build:** `libucontext`, o `fiber_posix.cpp` real e o executável
+isolado `rex_fiber_android_test` compilaram e linkaram para Android API 26,
+ARM64, com Ninja `-j2`. O ELF contém os símbolos `libucontext_getcontext`,
+`libucontext_makecontext`, `libucontext_swapcontext` e
+`libucontext_setcontext`, e declara GNU stack RW, não executável. O teste faz 64
+trocas, compara estado local e compartilhado e prepara os checkpoints
+`FIBER_CREATE`, `FIBER_ENTER`, `FIBER_YIELD`, `FIBER_RESUME`, `FIBER_RETURN` e
+`MULTIPLE_SWITCHES`. `FIBER_RETURN` valida o handoff explícito ao fiber principal
+usado pelo runtime antes que o entrypoint host retorne; com `uc_link` nulo, o
+entrypoint não deve retornar diretamente.
+
+Não havia ADB/aparelho disponível nesta sessão, portanto a execução do teste de
+fiber continua **AINDA NÃO COMPROVADA**. Após a correção, o build incremental de
+`rexcore` passou por `fiber_posix.cpp` e parou no primeiro blocker não relacionado:
+`memory_posix.cpp` referencia `rex::GetAndroidApiLevel()`, símbolo não declarado
+nesse build. Conforme o escopo desta subetapa, esse novo blocker não foi
+alterado. A série completa 0001–0009 reaplicou com `git apply --check --index`
+sobre o commit oficial v0.10.0 e passou em `git diff --check`.

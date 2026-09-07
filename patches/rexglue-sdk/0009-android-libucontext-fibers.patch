@@ -1,0 +1,183 @@
+diff --git a/.gitmodules b/.gitmodules
+index f659f65..c2426e8 100644
+--- a/.gitmodules
++++ b/.gitmodules
+@@ -66,3 +66,6 @@
+ [submodule "thirdparty/tracy"]
+ 	path = thirdparty/tracy
+ 	url = https://github.com/wolfpld/tracy.git
++[submodule "thirdparty/libucontext"]
++	path = thirdparty/libucontext
++	url = https://github.com/kaniini/libucontext.git
+diff --git a/include/rex/thread/fiber.h b/include/rex/thread/fiber.h
+index 352af67..cc686d4 100644
+--- a/include/rex/thread/fiber.h
++++ b/include/rex/thread/fiber.h
+@@ -14,7 +14,16 @@
+ #include <rex/platform.h>
+ #include <cstddef>
+ 
+-#if REX_PLATFORM_LINUX || REX_PLATFORM_MAC
++#if REX_PLATFORM_ANDROID
++// Use libucontext's freestanding ABI rather than Bionic's incomplete ucontext
++// ABI. The scoped rename avoids a tag collision with asm/sigcontext.h without
++// leaking a macro to consumers of this header.
++#define sigcontext libucontext_sigcontext
++#include <libucontext/libucontext.h>
++#undef sigcontext
++#include <cstdint>
++#include <vector>
++#elif REX_PLATFORM_LINUX || REX_PLATFORM_MAC
+ #if REX_PLATFORM_MAC && !defined(_XOPEN_SOURCE)
+ // Darwin hides the deprecated ucontext APIs unless _XOPEN_SOURCE is defined
+ // before including <ucontext.h>.
+@@ -27,6 +36,12 @@
+ 
+ namespace rex::thread {
+ 
++#if REX_PLATFORM_ANDROID
++using FiberContext = ::libucontext_ucontext_t;
++#elif REX_PLATFORM_LINUX || REX_PLATFORM_MAC
++using FiberContext = ::ucontext_t;
++#endif
++
+ /// Host OS fiber primitive.
+ /// Each guest fiber gets one Fiber. Switching preserves the entire C++ call
+ /// stack, so mid-function resume works without any LR lookup.
+@@ -57,7 +72,7 @@ struct Fiber {
+   void* handle_ = nullptr;
+   bool is_thread_fiber_ = false;
+ #elif REX_PLATFORM_LINUX || REX_PLATFORM_MAC
+-  ucontext_t context_{};
++  FiberContext context_{};
+   std::vector<uint8_t> stack_;
+   void (*entry_)(void*) = nullptr;
+   void* arg_ = nullptr;
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index 01b8ae8..3fb9ec5 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -101,6 +101,9 @@ target_include_directories(rexcore PRIVATE
+ 
+ if(APPLE)
+     target_link_libraries(rexcore PRIVATE pthread)
++elseif(ANDROID)
++    target_link_libraries(rexcore PUBLIC libucontext)
++    target_link_libraries(rexcore PRIVATE dl)
+ elseif(UNIX)
+     target_link_libraries(rexcore PRIVATE pthread rt dl)
+ endif()
+diff --git a/src/core/fiber_posix.cpp b/src/core/fiber_posix.cpp
+index 4fe1ca6..d688c9e 100644
+--- a/src/core/fiber_posix.cpp
++++ b/src/core/fiber_posix.cpp
+@@ -23,13 +23,23 @@
+ 
+ #include <cassert>
+ 
++#if REX_PLATFORM_ANDROID
++#define REX_FIBER_GETCONTEXT ::libucontext_getcontext
++#define REX_FIBER_MAKECONTEXT ::libucontext_makecontext
++#define REX_FIBER_SWAPCONTEXT ::libucontext_swapcontext
++#else
++#define REX_FIBER_GETCONTEXT ::getcontext
++#define REX_FIBER_MAKECONTEXT ::makecontext
++#define REX_FIBER_SWAPCONTEXT ::swapcontext
++#endif
++
+ namespace rex::thread {
+ 
+ thread_local Fiber* Fiber::tls_current_ = nullptr;
+ 
+ Fiber* Fiber::ConvertCurrentThread() {
+   auto* f = new Fiber();
+-  if (getcontext(&f->context_) == -1) {
++  if (REX_FIBER_GETCONTEXT(&f->context_) == -1) {
+     delete f;
+     return nullptr;
+   }
+@@ -44,7 +54,7 @@ Fiber* Fiber::Create(size_t stack_size, void (*entry)(void*), void* arg) {
+   f->arg_ = arg;
+   f->stack_.resize(stack_size);
+ 
+-  if (getcontext(&f->context_) == -1) {
++  if (REX_FIBER_GETCONTEXT(&f->context_) == -1) {
+     delete f;
+     return nullptr;
+   }
+@@ -52,7 +62,7 @@ Fiber* Fiber::Create(size_t stack_size, void (*entry)(void*), void* arg) {
+   f->context_.uc_stack.ss_size = f->stack_.size();
+   f->context_.uc_link = nullptr;
+   // Trampoline reads entry_/arg_ from tls_current_ — no pointer splitting needed.
+-  makecontext(&f->context_, &Fiber::Trampoline, 0);
++  REX_FIBER_MAKECONTEXT(&f->context_, &Fiber::Trampoline, 0);
+   return f;
+ }
+ 
+@@ -65,7 +75,7 @@ Fiber* Fiber::Create(size_t stack_size, void (*entry)(void*), void* arg) {
+ void Fiber::SwitchTo(Fiber* target) {
+   Fiber* from = tls_current_;
+   tls_current_ = target;
+-  swapcontext(&from->context_, &target->context_);
++  REX_FIBER_SWAPCONTEXT(&from->context_, &target->context_);
+ }
+ 
+ void Fiber::Destroy() {
+diff --git a/thirdparty/CMakeLists.txt b/thirdparty/CMakeLists.txt
+index 59f77c6..8c669db 100644
+--- a/thirdparty/CMakeLists.txt
++++ b/thirdparty/CMakeLists.txt
+@@ -63,6 +63,10 @@ if(REXGLUE_BUILD_TESTS)
+     list(APPEND REQUIRED_SUBMODULES catch2)
+ endif()
+ 
++if(ANDROID)
++    list(APPEND REQUIRED_SUBMODULES libucontext)
++endif()
++
+ foreach(submodule ${REQUIRED_SUBMODULES})
+     if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${submodule}/.git")
+         message(FATAL_ERROR
+@@ -150,6 +154,34 @@ target_compile_definitions(o1heap PRIVATE
+     "O1HEAP_CONFIG_HEADER=\"${CMAKE_CURRENT_SOURCE_DIR}/../include/rex/o1heap_config.h\"")
+ target_compile_options(o1heap PRIVATE -w)
+ 
++# Android's Bionic libc exposes ucontext_t, but not the context-switching
++# functions used by rex::thread::Fiber. Keep this replacement local to Android;
++# desktop POSIX targets continue using their libc implementation.
++if(ANDROID)
++    if(NOT IS_ARM64)
++        message(FATAL_ERROR "The Android fiber backend currently requires AArch64")
++    endif()
++
++    enable_language(ASM)
++    set(LIBUCONTEXT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libucontext")
++    add_library(libucontext STATIC
++        ${LIBUCONTEXT_DIR}/arch/aarch64/getcontext.S
++        ${LIBUCONTEXT_DIR}/arch/aarch64/setcontext.S
++        ${LIBUCONTEXT_DIR}/arch/aarch64/swapcontext.S
++        ${LIBUCONTEXT_DIR}/arch/aarch64/makecontext.c
++        ${LIBUCONTEXT_DIR}/arch/aarch64/trampoline.c
++    )
++    target_include_directories(libucontext
++        PUBLIC
++            ${LIBUCONTEXT_DIR}/include
++            ${LIBUCONTEXT_DIR}/arch/aarch64/include
++        PRIVATE
++            ${LIBUCONTEXT_DIR}/arch/aarch64
++            ${LIBUCONTEXT_DIR}/arch/common
++    )
++    target_compile_options(libucontext PRIVATE -w)
++endif()
++
+ # xxHash - extremely fast non-cryptographic hash (git submodule)
+ set(XXHASH_BUILD_XXHSUM OFF CACHE BOOL "" FORCE)
+ add_subdirectory(xxHash/cmake_unofficial)
+diff --git a/thirdparty/libucontext b/thirdparty/libucontext
+new file mode 160000
+index 0000000..49e671d
+--- /dev/null
++++ b/thirdparty/libucontext
+@@ -0,0 +1 @@
++Subproject commit 49e671dd52ff6791295d8161ad3b6da7dc5f6f9d
+
