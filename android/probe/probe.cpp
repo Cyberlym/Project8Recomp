@@ -1,5 +1,6 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
+#include <SDL3/SDL_system.h>
 #include <jni.h>
 
 #include <rex/ui/vulkan/instance.h>
@@ -312,6 +313,36 @@ void CloseLog() {
   }
 }
 
+void PersistentLifecycleBreadcrumb(const char* event, uintptr_t handle = 0) {
+  auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+  auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
+  if (!env || !activity) {
+    return;
+  }
+  jclass activity_class = env->GetObjectClass(activity);
+  jmethodID append_method = activity_class
+                                ? env->GetStaticMethodID(
+                                      activity_class,
+                                      "appendNativeLifecycleBreadcrumb",
+                                      "(Ljava/lang/String;J)V")
+                                : nullptr;
+  jstring event_string = append_method ? env->NewStringUTF(event) : nullptr;
+  if (append_method && event_string) {
+    env->CallStaticVoidMethod(activity_class, append_method, event_string,
+                              static_cast<jlong>(handle));
+  }
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+  }
+  if (event_string) {
+    env->DeleteLocalRef(event_string);
+  }
+  if (activity_class) {
+    env->DeleteLocalRef(activity_class);
+  }
+  env->DeleteLocalRef(activity);
+}
+
 bool SDLCALL LifecycleEventWatch(void*, SDL_Event* event) {
   std::lock_guard<std::mutex> lock(g_state_mutex);
   switch (event->type) {
@@ -335,6 +366,7 @@ bool SDLCALL LifecycleEventWatch(void*, SDL_Event* event) {
 }
 
 int RunProbe() {
+  PersistentLifecycleBreadcrumb("SDL_NATIVE_THREAD_START");
   const bool recreate_hint_set =
       SDL_SetHint(SDL_HINT_ANDROID_ALLOW_RECREATE_ACTIVITY, "1");
   {
@@ -459,6 +491,7 @@ int RunProbe() {
   presenter.reset();
   provider.reset();
   CloseLog();
+  PersistentLifecycleBreadcrumb("SDL_NATIVE_THREAD_STOPPED");
   return loop_result;
 }
 
@@ -517,6 +550,7 @@ extern "C" void rexglue_android_presentation_diagnostic(
   }
   switch (event) {
     case rex::ui::AndroidPresentationDiagnosticEvent::kSurfaceCreated:
+      PersistentLifecycleBreadcrumb("REXUI_SURFACE_CREATED", handle);
       LogLine("REXUI_SURFACE_CREATE: %s", result == 0 && handle != 0 ? "OK" : "FAILED");
       LogLine("REXUI_SURFACE_TYPE: AndroidNativeWindow");
       LogLine("REXUI_NATIVE_WINDOW_VALID: %s", Boolean(handle != 0));
@@ -526,15 +560,18 @@ extern "C" void rexglue_android_presentation_diagnostic(
       LogLine("REXUI_VULKAN_PRESENTER_ENTER: OK");
       break;
     case rex::ui::AndroidPresentationDiagnosticEvent::kVulkanSurfaceCreated:
+      PersistentLifecycleBreadcrumb("VK_SURFACE_CREATED", handle);
       LogLine("REXUI_VK_CREATE_ANDROID_SURFACE: VkResult=%d", result);
       LogLine("REXUI_VK_SURFACE_VALID: %s handle=%p", Boolean(handle != 0),
               reinterpret_cast<void*>(handle));
       break;
     case rex::ui::AndroidPresentationDiagnosticEvent::kSurfaceDestroyed:
+      PersistentLifecycleBreadcrumb("REXUI_SURFACE_DESTROYED", handle);
       LogLine("REXUI_SURFACE_DESTROY: handle=%p",
               reinterpret_cast<void*>(handle));
       break;
     case rex::ui::AndroidPresentationDiagnosticEvent::kVulkanSurfaceDestroyed:
+      PersistentLifecycleBreadcrumb("VK_SURFACE_DESTROYED", handle);
       LogLine("REXUI_VK_SURFACE_DESTROY: handle=%p",
               reinterpret_cast<void*>(handle));
       break;

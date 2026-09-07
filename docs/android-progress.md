@@ -843,3 +843,49 @@ validada. Os ELFs são AArch64, `libmain.so` possui `DT_NEEDED` real para
 A Etapa 5 ainda não é marcada como completa neste ponto: falta executar uma
 vez o botão `RECREATE ACTIVITY / SURFACE` no Moto G34 e conferir o resultado
 real `LIFECYCLE_SURFACE_RECREATION`.
+
+## 2026-09-07 — Blocker físico de recreation e diagnóstico persistente
+
+No Moto G34, Home/retorno e lock/unlock continuaram funcionando, mas o botão
+de recreation fechou o app após aproximadamente dois segundos. Novas tentativas
+de abrir a mesma task falharam até ela ser removida dos recentes. Ao iniciar uma
+task limpa, os contadores em memória voltaram ao estado inicial; portanto eles
+não preservaram evidência suficiente para identificar o ponto da falha. Rotação
+física também causou uma breve interrupção visual, sem diálogo de crash, mas
+não foi possível provar se houve recriação da Activity.
+
+A revisão SDL3 usada pelo ReXGlue é exatamente
+`8bf3b7215ad9fc3deb583c6a3a37c6c67f2e24e4`, de 2026-03-14. O histórico
+oficial confirma que ela já contém as correções de 2025 que tornam o hint de
+recreation thread-safe e preservam o valor definido por `SDL_SetHint`; não foi
+encontrado commit posterior a essa revisão referente a `nativeQuit` ou
+`SDL_ANDROID_ALLOW_RECREATE_ACTIVITY`. Isso elimina esses bugs antigos como
+causa direta, mas não comprova que o fluxo do probe seja seguro.
+
+O fluxo real dessa revisão mantém estado Java estático. Na nova Activity,
+`onCreate()` aceita a recreation quando o hint está ativo e depois
+`SDL.initialize()` zera `mSDLThread`, singleton, surface e estado de lifecycle,
+mas preserva `mActivityCreated` e `mSDLMainFinished`. Na Activity antiga,
+`onDestroy()` envia `SDL_EVENT_QUIT`, espera a thread nativa por no máximo um
+segundo e chama `nativeQuit()` mesmo se o join expirar. Se a thread anterior
+permanecer viva após esse timeout, existe possibilidade de sobreposição com a
+reinicialização; isso é uma **HIPÓTESE**, não a causa raiz comprovada. O estado
+do callback opt-in do ReXGlue também é process-global, enquanto provider,
+presenter e window são locais à execução de `RunProbe` e só são destruídos se o
+loop processar o quit e retornar normalmente.
+
+O probe agora mantém em `SharedPreferences` privados um trace síncrono e
+limitado a 64 KiB. Cada linha possui sequência persistente, session ID,
+geração de processo/boot, geração de Activity, PID e relógio monotônico. São
+registrados callbacks reais de Activity e `SurfaceHolder`, pedido de recreation,
+estado da SDL thread, entrada/saída do main nativo e os callbacks reais de
+criação/destruição de `AndroidNativeWindowSurface` e `VkSurfaceKHR`, incluindo
+identidades/handles. O relatório também consulta `ApplicationExitInfo` em API
+30 ou superior para mostrar o motivo registrado pelo Android para o processo
+anterior. Não foi adicionado signal handler, crash handler ou correção de
+lifecycle. A causa raiz permanece **BLOCKER / aguardando trace físico**.
+
+O APK diagnóstico incremental tem 24.355.531 bytes e SHA-256
+`bec5ac9ee512e18cbf69bd8827051b41e984c9bd7ec8e83a59afd5125292a5c2`.
+Ele preserva package, ABI, minSdk/targetSdk, assinatura e os checkpoints já
+validados; nenhuma alteração foi feita no ReXGlue ou na série 0001–0014.
