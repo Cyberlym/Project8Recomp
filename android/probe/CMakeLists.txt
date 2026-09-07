@@ -22,17 +22,18 @@ set(REXGLUE_USE_D3D12 OFF CACHE BOOL "" FORCE)
 set(REXGLUE_USE_VULKAN ON CACHE BOOL "" FORCE)
 add_subdirectory("${REXGLUE_SDK_ROOT}" rexglue-sdk EXCLUDE_FROM_ALL)
 
-add_library(main SHARED probe.cpp)
+add_library(main SHARED probe.cpp fiber_test.cpp android_preflight.cpp)
 set_target_properties(main PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 target_include_directories(main PRIVATE "${REXGLUE_SDK_ROOT}/src")
 target_compile_definitions(main PRIVATE REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS=1)
 target_compile_definitions(rexui PRIVATE REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS=1)
-target_link_libraries(main PRIVATE rexruntime renderdoc log android)
+target_link_libraries(main PRIVATE rexruntime renderdoc libucontext log android)
 
 # A standalone backend test keeps fiber validation independent from the
 # monolithic rexcore target. It compiles the same implementation that rexcore
 # uses and can be pushed to an Android device for the runtime checks.
 add_executable(rex_fiber_android_test
+  fiber_test_main.cpp
   fiber_test.cpp
   "${REXGLUE_SDK_ROOT}/src/core/fiber_posix.cpp"
 )

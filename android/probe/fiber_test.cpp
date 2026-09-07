@@ -1,7 +1,8 @@
 #include <rex/thread/fiber.h>
 
 #include <cstdint>
-#include <cstdio>
+
+#include "fiber_test.h"
 
 namespace {
 
@@ -45,28 +46,25 @@ void FiberEntry(void* raw_state) {
   state->failed = true;
 }
 
-void PrintCheckpoint(const char* name, bool passed) {
-  std::printf("%s: %s\n", name, passed ? "OK" : "FAILED");
-}
-
 }  // namespace
 
-int main() {
+FiberTestResult RunFiberTest() {
+  FiberTestResult result;
+  result.backend = true;
   FiberTestState state;
   state.main_fiber = rex::thread::Fiber::ConvertCurrentThread();
   auto* test_fiber =
       rex::thread::Fiber::Create(256 * 1024, FiberEntry, &state);
 
-  const bool created = state.main_fiber != nullptr && test_fiber != nullptr;
-  PrintCheckpoint("FIBER_CREATE", created);
-  if (!created) {
+  result.created = state.main_fiber != nullptr && test_fiber != nullptr;
+  if (!result.created) {
     if (test_fiber) {
       test_fiber->Destroy();
     }
     if (state.main_fiber) {
       state.main_fiber->Destroy();
     }
-    return 1;
+    return result;
   }
 
   uint64_t expected = kSeed;
@@ -79,18 +77,16 @@ int main() {
     state.resume_command = iteration + 1;
   }
 
-  PrintCheckpoint("FIBER_ENTER", state.entered);
-  PrintCheckpoint("FIBER_YIELD", state.yields >= 1 && data_valid);
-  PrintCheckpoint("FIBER_RESUME", state.yields >= 2 && data_valid);
-  PrintCheckpoint("MULTIPLE_SWITCHES",
-                  state.yields == kSwitchCount && data_valid);
+  result.entered = state.entered;
+  result.yielded = state.yields >= 1 && data_valid;
+  result.resumed = state.yields >= 2 && data_valid;
+  result.multiple_switches = state.yields == kSwitchCount && data_valid;
 
   rex::thread::Fiber::SwitchTo(test_fiber);
-  const bool returned = state.completed && !state.failed;
-  PrintCheckpoint("FIBER_RETURN", returned);
+  result.returned = state.completed && !state.failed;
 
   test_fiber->Destroy();
   state.main_fiber->Destroy();
 
-  return state.entered && data_valid && returned ? 0 : 1;
+  return result;
 }

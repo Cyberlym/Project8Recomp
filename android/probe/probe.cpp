@@ -6,8 +6,12 @@
 #include <rex/ui/vulkan/provider.h>
 #include <rex/ui/window.h>
 #include <rex/ui/windowed_app_context_sdl.h>
+#include <rex/runtime.h>
 
 #include "ui/android_presentation_diagnostics.h"
+
+#include "fiber_test.h"
+#include "android_preflight.h"
 
 #include <cstdarg>
 #include <cstdio>
@@ -40,6 +44,11 @@ bool g_presenter_attach_attempted = false;
 bool g_surface_call_completed = false;
 int32_t g_surface_result = 0;
 uintptr_t g_surface_handle = 0;
+FiberTestResult g_fiber_result;
+bool g_fiber_test_attempted = false;
+AndroidPreflightResult g_preflight_result;
+bool g_preflight_attempted = false;
+bool g_runtime_object_constructed = false;
 
 const char* Status(bool attempted, bool value) {
   return !attempted ? "NOT TESTED" : value ? "OK" : "FAILED";
@@ -81,6 +90,70 @@ void RefreshReportLocked() {
                      g_surface_result == 0 && g_surface_handle != 0;
   g_report += "REXUI_5B3_READY: ";
   g_report += ready ? "OK\n" : !g_error.empty() ? "FAILED\n" : "NOT TESTED\n";
+  g_report += "\nFIBER_BACKEND: ";
+  g_report += g_fiber_test_attempted
+                  ? Status(true, g_fiber_result.backend)
+                  : "DEVICE TEST REQUIRED";
+  g_report += "\nFIBER_CREATE: " +
+              std::string(Status(g_fiber_test_attempted, g_fiber_result.created));
+  g_report += "\nFIBER_ENTER: " +
+              std::string(Status(g_fiber_test_attempted, g_fiber_result.entered));
+  g_report += "\nFIBER_YIELD: " +
+              std::string(Status(g_fiber_test_attempted, g_fiber_result.yielded));
+  g_report += "\nFIBER_RESUME: " +
+              std::string(Status(g_fiber_test_attempted, g_fiber_result.resumed));
+  g_report += "\nFIBER_RETURN: " +
+              std::string(Status(g_fiber_test_attempted, g_fiber_result.returned));
+  g_report += "\nFIBER_MULTIPLE_SWITCHES: " +
+              std::string(Status(g_fiber_test_attempted,
+                                 g_fiber_result.multiple_switches));
+  g_report += "\n\nREXCORE_LINK: BUILD VERIFIED";
+  g_report += "\nREXRUNTIME_LINK: BUILD VERIFIED\n";
+  g_report += "REXRUNTIME_OBJECT_NO_GAME: " +
+              std::string(Status(g_preflight_attempted,
+                                 g_runtime_object_constructed)) +
+              "\nREXRUNTIME_SETUP: NOT TESTED (guest memory/fault handlers)\n";
+  g_report += "\nANDROID_AARCH64: " +
+              std::string(Status(g_preflight_attempted,
+                                 g_preflight_result.aarch64));
+  g_report += "\nPAGE_SIZE: ";
+  g_report += g_preflight_attempted
+                  ? std::to_string(g_preflight_result.page_size)
+                  : "DEVICE TEST REQUIRED";
+  g_report += "\nMMAP_BASIC: " +
+              std::string(Status(g_preflight_attempted,
+                                 g_preflight_result.mmap_basic));
+  g_report += "\nMPROTECT_READ: " +
+              std::string(Status(g_preflight_attempted,
+                                 g_preflight_result.mprotect_read));
+  g_report += "\nMPROTECT_RX: " +
+              std::string(Status(g_preflight_attempted,
+                                 g_preflight_result.mprotect_rx));
+  g_report += "\nMPROTECT_RW_RESTORE: " +
+              std::string(Status(g_preflight_attempted,
+                                 g_preflight_result.mprotect_rw_restore));
+  g_report += "\nW_X_POLICY: RW->R->RX->RW (no RWX requested)";
+  g_report += "\nSHARED_MEMORY: " +
+              std::string(Status(g_preflight_attempted,
+                                 g_preflight_result.shared_memory));
+  g_report += "\nTHREADS: " +
+              std::string(Status(g_preflight_attempted,
+                                 g_preflight_result.threads));
+  g_report += "\nMUTEX_CONDITION: " +
+              std::string(Status(g_preflight_attempted,
+                                 g_preflight_result.mutex_condition));
+  g_report += "\nMONOTONIC_CLOCK: " +
+              std::string(Status(g_preflight_attempted,
+                                 g_preflight_result.monotonic_clock));
+  g_report += "\nAPP_PRIVATE_FILESYSTEM: " +
+              std::string(Status(g_preflight_attempted,
+                                 g_preflight_result.private_filesystem)) +
+              "\n";
+  if (g_preflight_attempted && !g_preflight_result.failure_operation.empty()) {
+    g_report += "PREFLIGHT_FIRST_FAILURE: " +
+                g_preflight_result.failure_operation + " errno=" +
+                std::to_string(g_preflight_result.failure_errno) + "\n";
+  }
   if (!g_error.empty()) {
     g_report += "\nERROR: " + g_error + "\n";
   }
@@ -140,11 +213,42 @@ int RunProbe() {
   RefreshReport();
   OpenLog();
 
+  const FiberTestResult fiber_result = RunFiberTest();
+  {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    g_fiber_result = fiber_result;
+    g_fiber_test_attempted = true;
+    RefreshReportLocked();
+  }
+  LogLine("FIBER_BACKEND: %s", Status(true, fiber_result.backend));
+  LogLine("FIBER_CREATE: %s", Status(true, fiber_result.created));
+  LogLine("FIBER_ENTER: %s", Status(true, fiber_result.entered));
+  LogLine("FIBER_YIELD: %s", Status(true, fiber_result.yielded));
+  LogLine("FIBER_RESUME: %s", Status(true, fiber_result.resumed));
+  LogLine("FIBER_RETURN: %s", Status(true, fiber_result.returned));
+  LogLine("FIBER_MULTIPLE_SWITCHES: %s",
+          Status(true, fiber_result.multiple_switches));
+
   rex::ui::SDLWindowedAppContext app_context;
   if (!app_context.Initialize()) {
     Fail("SDLWindowedAppContext::Initialize failed");
     CloseLog();
     return 1;
+  }
+
+  const AndroidPreflightResult preflight_result = RunAndroidPreflight();
+  bool runtime_object_constructed = false;
+  {
+    rex::Runtime runtime(std::filesystem::path{});
+    runtime_object_constructed = runtime.memory() == nullptr &&
+                                 rex::Runtime::instance() == nullptr;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    g_preflight_result = preflight_result;
+    g_preflight_attempted = true;
+    g_runtime_object_constructed = runtime_object_constructed;
+    RefreshReportLocked();
   }
 
   auto window = rex::ui::Window::Create(

@@ -711,3 +711,18 @@ RenderDoc exigida pelo include público de Vulkan), sem incorporar `rexui` uma
 segunda vez. Ambos `librexruntime.so` e `libmain.so` compilaram e linkaram para
 Android ARM64/API 26. A série 0001–0013 reaplicou integralmente sobre o commit
 oficial v0.10.0 sem conflitos e passou em `git diff --check`.
+
+O teste real de fibers passou a compartilhar uma única rotina entre o
+executável isolado e o APK: são 64 trocas com validação de estado local e
+compartilhado, sem duplicar `fiber_posix.cpp` dentro de `libmain.so`. Os dois
+artefatos compilaram e linkaram. O diagnóstico consolidado também executa um
+preflight não destrutivo de AArch64, page size, `mmap`, transições RW/R/RX,
+`ASharedMemory`, thread, mutex/condition variable, relógio monotônico e arquivo
+privado do app. Ele nunca solicita RWX nem endereço fixo.
+
+`rexruntime` possui uma entrada `Setup()` sem game code, mas ela instala SEH e
+inicializa imediatamente o mapa guest de aproximadamente 4,8 GiB. Portanto o
+probe apenas constrói e destrói o objeto `Runtime`; `Runtime::Setup()` fica
+explicitamente `NOT TESTED` até uma decisão específica sobre memória e fault
+handling. O relatório separa os links de `rexcore`/`rexruntime` como `BUILD
+VERIFIED` dos resultados que ainda exigem execução no aparelho.
