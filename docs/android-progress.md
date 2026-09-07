@@ -445,3 +445,40 @@ do presenter. Nenhuma segunda `VkInstance`, duplicação do presenter ou mudanç
 de ownership foi adicionada. Pelo mesmo motivo, `tools/make_notice.py` não pôde
 revalidar o `NOTICE`: os textos de licença que ele consulta ficam nesses
 submódulos; o arquivo existente não foi alterado.
+
+## 2026-09-07 — Etapa 5B.3: grafo real e blocker de dependências
+
+**Fato físico incorporado:** a execução do APK 5B.2 no Moto G34 confirmou
+`SDL_WINDOW_REAL: OK`, `ANDROID_NATIVE_WINDOW: OK`, ponteiro não nulo e
+`SURFACE_PIXEL_SIZE: 720 x 1600`. Isso comprova o wrapper e a aquisição via
+SDL3, mas não executa o `VulkanPresenter`.
+
+**Grafo oficial observado:** `rexui` é um único target OBJECT. Ele sempre agrega
+as fontes core de UI, overlays e backend de plataforma; com
+`REXGLUE_USE_VULKAN`, agrega também todas as fontes Vulkan, incluindo
+`vulkan_provider.cpp`, `vulkan_presenter.cpp`, device, instance, samplers,
+immediate drawer, VMA e utilitários. Não existe opção oficial para selecionar
+somente provider/presenter.
+
+Para esse target, `rexui` liga `rexcore`, ImGui, SDL3, UTF8-CPP, Vulkan-Headers,
+Vulkan Memory Allocator e headers SPIR-V. `rexcore` acrescenta fmt, SIMDe,
+toml++, spdlog, xxHash, UTF8-CPP e headers CLI11. O conjunto mínimo indicado
+pelo grafo contém 14 submódulos: `cli11`, `tomlplusplus`, `simde`, `xxHash`,
+`spdlog`, `fmt`, `utfcpp`, `imgui`, `sdl3`, `vulkan-headers`,
+`vulkan-memory-allocator`, `spirv-headers`, `spirv-tools` e `glslang`. Tracy e
+FidelityFX podem ser desligados por opções oficiais.
+
+O CMake top-level ainda exige incondicionalmente `libmspack` e `FFmpeg` na
+verificação de submódulos e adiciona todos os diretórios do SDK, embora esses
+dois não sejam dependências do caminho de apresentação. Assim, usar o target
+oficial sem mudança de build graph exigiria inicializar um conjunto ainda mais
+amplo. Criar um target paralelo selecionando fontes manualmente deixaria de
+provar o target `rexui` real e introduziria uma arquitetura de build nova.
+
+**Resultado:** `5B.3 BUILD: FAIL / NOT RUN`. Nenhum submódulo foi baixado e
+nenhum código foi alterado. O caminho estático
+`AndroidNativeWindowSurface` → `VulkanPresenter` →
+`vkCreateAndroidSurfaceKHR` continua presente, mas não foi compilado, executado
+ou promovido a checkpoint. É necessária uma decisão explícita entre autorizar o
+conjunto amplo de submódulos do build oficial ou autorizar uma mudança focada no
+grafo CMake upstream para tornar `rexui` configurável isoladamente.
