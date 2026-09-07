@@ -214,6 +214,25 @@ mostrou permissões implícitas históricas porque o manifesto não contém uma 
 declarar explicitamente minSdk 26/targetSdk 35. Nenhum novo build foi iniciado
 após essa observação, conforme o limite desta etapa.
 
+## 2026-09-07 — Diagnóstico de compatibilidade do APK
+
+A inspeção estática confirmou que o APK anterior não declarava `uses-sdk`:
+`aapt dump badging` não mostrava min/target e reportava permissões históricas
+implícitas. O manifesto também exigia `android.hardware.vulkan.version`, uma
+restrição de instalação desnecessária para este probe, que já valida Vulkan em
+tempo de execução. A menor correção foi declarar explicitamente
+`minSdkVersion=26` e `targetSdkVersion=35` e remover essa feature obrigatória;
+nenhum código nativo foi alterado por essa correção.
+
+O reempacotamento incremental reutilizou `/tmp/project8-android-probe-build-ninja`
+e concluiu com Ninja, D8, aapt2, zipalign e apksigner. O APK final reporta
+package `com.cyberlym.project8probe`, compile SDK 35, min SDK 26, target SDK 35,
+somente ABI `arm64-v8a`, Activity exportada correta e assinatura v2/v3 válida.
+Não há permissões explícitas nem feature Vulkan obrigatória no manifesto.
+`aapt2 dump xmltree` desta versão requer sintaxe de arquivo compilado diferente;
+o manifesto final foi validado pelo `aapt dump xmltree`/`aapt dump badging` e pela
+listagem ZIP. O tamanho final é 3.371.623 bytes.
+
 **Não implementado:** ReXGlue, runtime, game code, codegen, arquivos do jogo,
 launcher, touch customizado, Turnip/AdrenoTools, lifecycle do runtime, exportação
 do log e testes no Moto G34. Nenhum push foi feito.
