@@ -57,6 +57,9 @@ uint32_t g_surface_create_count = 0;
 uint32_t g_surface_destroy_count = 0;
 uint32_t g_vk_surface_create_count = 0;
 uint32_t g_vk_surface_destroy_count = 0;
+bool g_android_entry = false;
+bool g_sdl_window_attempted = false;
+bool g_sdl_window_real = false;
 
 const char* Status(bool attempted, bool value) {
   return !attempted ? "NOT TESTED" : value ? "OK" : "FAILED";
@@ -64,7 +67,22 @@ const char* Status(bool attempted, bool value) {
 const char* Boolean(bool value) { return value ? "true" : "false"; }
 
 void RefreshReportLocked() {
-  g_report = "Project 8 ReXGlue Android Presenter Probe\n\n";
+  g_report = "Project 8 ReXGlue Android Stage 5 Probe\n\n";
+  g_report += "ANDROID_ENTRY: " +
+              std::string(g_android_entry ? "OK" : "NOT TESTED") + "\n";
+  g_report += "SDL_WINDOW_REAL: " +
+              std::string(Status(g_sdl_window_attempted, g_sdl_window_real)) +
+              "\n";
+  g_report += "ANDROID_NATIVE_WINDOW: " +
+              std::string(Status(g_surface_create_attempted,
+                                 g_native_window_valid)) +
+              "\n";
+  g_report += "SURFACE_PIXEL_SIZE: ";
+  g_report += g_surface_created
+                  ? std::to_string(g_surface_width) + " x " +
+                        std::to_string(g_surface_height)
+                  : "NOT TESTED";
+  g_report += "\n\n";
   g_report += "REXUI_SURFACE_CREATE: " +
               std::string(Status(g_surface_create_attempted, g_surface_created)) + "\n";
   g_report += "REXUI_SURFACE_TYPE: ";
@@ -257,6 +275,10 @@ bool SDLCALL LifecycleEventWatch(void*, SDL_Event* event) {
 int RunProbe() {
   rex::ui::SetAndroidPresentationDiagnosticCallback(
       rexglue_android_presentation_diagnostic);
+  {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    g_android_entry = true;
+  }
   RefreshReport();
   OpenLog();
 
@@ -300,8 +322,15 @@ int RunProbe() {
 
   auto window = rex::ui::Window::Create(
       app_context, "Project 8 ReXGlue Presenter Probe", 640, 360);
-  if (!window || !window->Open() ||
-      window->phase() != rex::ui::Window::Phase::kOpen) {
+  const bool window_real = window && window->Open() &&
+                           window->phase() == rex::ui::Window::Phase::kOpen;
+  {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    g_sdl_window_attempted = true;
+    g_sdl_window_real = window_real;
+    RefreshReportLocked();
+  }
+  if (!window_real) {
     Fail("WindowSDL did not open a real SDL_Window");
     CloseLog();
     return 1;

@@ -50,9 +50,9 @@ void FiberEntry(void* raw_state) {
 
 FiberTestResult RunFiberTest() {
   FiberTestResult result;
-  result.backend = true;
   FiberTestState state;
   state.main_fiber = rex::thread::Fiber::ConvertCurrentThread();
+  result.backend = state.main_fiber != nullptr;
   auto* test_fiber =
       rex::thread::Fiber::Create(256 * 1024, FiberEntry, &state);
 
