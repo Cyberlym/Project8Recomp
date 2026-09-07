@@ -288,3 +288,48 @@ linkar ou inicializar no Android.
 **Decisão:** a Etapa 5A está bloqueada antes da Fase 5B/5C. Nenhum stub,
 substituição de API ou runtime presumido foi criado; não houve build, codegen,
 download, uso de ISO/default.xex ou alteração de código Android.
+
+## 2026-09-07 — Etapa 5A: SDK v0.10.0 verificado
+
+**Versão e patches:** foi obtido temporariamente, fora do repositório, o
+checkout oficial `rexglue/rexglue-sdk` na tag `v0.10.0`, commit
+`f5337cdc947ff6d4c4196737e2c807a48f2a1fc2`. O checkout iniciou limpo; os dois
+patches de `patches/rexglue-sdk/series` passaram `git apply --check --index` e
+foram aplicados na ordem `0001-thp8-runtime-stack.patch`,
+`0002-macos-update-moltenvk-1.4.2.patch`. O resultado tem somente as 61
+alterações indexadas desses patches, sem diferenças não indexadas.
+
+**Targets observados:** o SDK configura `rexcore` (OBJECT),
+`rexfilesystem`/`rexui`/`rexinput`/`rexaudio` (OBJECT), `rexruntime` (SHARED),
+`rexgpu-xenos` (SHARED), `rexcodegen` (STATIC) e o executável `rexglue`, além
+dos targets de terceiros. `rexruntime` liga os objetos de core, filesystem, UI,
+input e áudio, SDL3, fmt, spdlog, tomlplusplus, simde, VMA e headers Vulkan.
+
+**Generated code:** o template emitido por `rexglue_cmake.inja` encontra o SDK
+independentemente, inclui `sources.cmake` somente se codegen já existir, mas
+`rexglue_setup_target(thps_p8)` sempre adiciona a dependência
+`thps_p8_codegen`, liga `rex::runtime` e cria `thps_p8_recomp` quando existem as
+fontes geradas. No Project8Recomp, `main.cpp` inclui diretamente
+`generated/default/thps_p8_init.h`; portanto o target do jogo continua
+obrigatoriamente dependente de generated code, embora `rexruntime` em si não
+inclua esse header.
+
+**Android/ARM64 observado no SDK:** `rex/platform.h` reconhece
+`__ANDROID__`/`__aarch64__`; `memory_posix.cpp` usa `ASharedMemory_create` via
+`dlopen`, `mmap`, `mprotect` e `MAP_FIXED_NOREPLACE`/`MAP_FIXED`; threading POSIX
+tem condicionais Android; o presenter Vulkan chama realmente
+`vkCreateAndroidSurfaceKHR` quando recebe `AndroidNativeWindowSurface`; e há
+funções Vulkan Android declaradas. Não há, porém, `surface_android.h/.cpp` no
+checkout.
+
+**Blocker real:** `src/ui/CMakeLists.txt` seleciona `surface_gnulinux.cpp` para
+todo `else()` não-Windows/macOS e exige `pkg-config`, X11-XCB e Wayland em
+qualquer `UNIX`. Isso inclui Android. O SDK também tem `seh_posix.cpp` e outros
+caminhos POSIX que precisam de validação Bionic; a presença de condicionais
+Android não prova que o runtime inteiro compila ou inicializa no aparelho.
+
+**Resultado:** `ETAPA 5B: NO-GO`. Existe um núcleo conceitual real (`rexruntime`
+e seus targets OBJECT), mas não existe ainda um subconjunto Android suportado e
+linkável no grafo atual: UI/surface e dependências desktop precisam de uma
+decisão e correção arquitetural. Nenhum build pesado, configuração CMake,
+alteração do SDK, codegen ou fonte do projeto foi executado nesta auditoria.
