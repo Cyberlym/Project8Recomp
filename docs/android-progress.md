@@ -700,3 +700,14 @@ passa ao `MappedMemory`, que já o fecha. A fonte e o vínculo com SDL3 são
 selecionados somente no Android. Ela compilou e removeu o símbolo indefinido;
 o link avançou até seu único erro restante, o callback opt-in do diagnóstico de
 apresentação definido fora de `librexruntime.so`.
+
+O patch `0013-android-presentation-diagnostic-callback.patch` mantém a
+instrumentação opt-in dentro do objeto `rexui`, mas troca o símbolo externo por
+um callback registrado explicitamente e armazenado de forma atômica. Isso
+permite que `librexruntime.so` preserve `--no-undefined`; sem a macro de
+diagnóstico, o arquivo não define símbolos nem altera comportamento. O probe
+agora liga `libmain.so` a `rexruntime` real (e somente à interface de headers do
+RenderDoc exigida pelo include público de Vulkan), sem incorporar `rexui` uma
+segunda vez. Ambos `librexruntime.so` e `libmain.so` compilaram e linkaram para
+Android ARM64/API 26. A série 0001–0013 reaplicou integralmente sobre o commit
+oficial v0.10.0 sem conflitos e passou em `git diff --check`.

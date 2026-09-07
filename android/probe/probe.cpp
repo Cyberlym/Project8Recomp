@@ -15,6 +15,10 @@
 #include <mutex>
 #include <string>
 
+extern "C" void rexglue_android_presentation_diagnostic(
+    rex::ui::AndroidPresentationDiagnosticEvent event, int32_t result,
+    uintptr_t handle, uint32_t width, uint32_t height);
+
 namespace {
 
 FILE* g_log = nullptr;
@@ -131,6 +135,8 @@ void CloseLog() {
 }
 
 int RunProbe() {
+  rex::ui::SetAndroidPresentationDiagnosticCallback(
+      rexglue_android_presentation_diagnostic);
   RefreshReport();
   OpenLog();
 

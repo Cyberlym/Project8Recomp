@@ -1,0 +1,110 @@
+diff --git a/src/ui/CMakeLists.txt b/src/ui/CMakeLists.txt
+index 81044ef..370e5f2 100644
+--- a/src/ui/CMakeLists.txt
++++ b/src/ui/CMakeLists.txt
+@@ -66,6 +66,7 @@ endif()
+ # Platform-specific sources (windowing itself is SDL3, platform-independent)
+ if(ANDROID)
+     set(REXUI_PLATFORM_SOURCES
++        android_presentation_diagnostics.cpp
+         surface_android.cpp
+     )
+ elseif(WIN32)
+diff --git a/src/ui/android_presentation_diagnostics.cpp b/src/ui/android_presentation_diagnostics.cpp
+new file mode 100644
+index 0000000..80d126e
+--- /dev/null
++++ b/src/ui/android_presentation_diagnostics.cpp
+@@ -0,0 +1,32 @@
++#include <rex/platform.h>
++
++#include "ui/android_presentation_diagnostics.h"
++
++#if REX_PLATFORM_ANDROID && defined(REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS)
++
++#include <atomic>
++
++namespace rex::ui {
++namespace {
++
++std::atomic<AndroidPresentationDiagnosticCallback> diagnostic_callback{nullptr};
++
++}  // namespace
++
++void SetAndroidPresentationDiagnosticCallback(
++    AndroidPresentationDiagnosticCallback callback) {
++  diagnostic_callback.store(callback, std::memory_order_release);
++}
++
++void AndroidPresentationDiagnostic(AndroidPresentationDiagnosticEvent event,
++                                   int32_t result, uintptr_t handle,
++                                   uint32_t width, uint32_t height) {
++  auto callback = diagnostic_callback.load(std::memory_order_acquire);
++  if (callback) {
++    callback(event, result, handle, width, height);
++  }
++}
++
++}  // namespace rex::ui
++
++#endif
+diff --git a/src/ui/android_presentation_diagnostics.h b/src/ui/android_presentation_diagnostics.h
+index d01a6be..c5b8c39 100644
+--- a/src/ui/android_presentation_diagnostics.h
++++ b/src/ui/android_presentation_diagnostics.h
+@@ -12,10 +12,16 @@ enum class AndroidPresentationDiagnosticEvent : uint32_t {
+   kVulkanSurfaceCreated = 3,
+ };
+ 
+-}  // namespace rex::ui
++using AndroidPresentationDiagnosticCallback = void (*)(
++    AndroidPresentationDiagnosticEvent event, int32_t result, uintptr_t handle,
++    uint32_t width, uint32_t height);
++
++void SetAndroidPresentationDiagnosticCallback(
++    AndroidPresentationDiagnosticCallback callback);
++void AndroidPresentationDiagnostic(AndroidPresentationDiagnosticEvent event,
++                                   int32_t result, uintptr_t handle,
++                                   uint32_t width, uint32_t height);
+ 
+-extern "C" void rexglue_android_presentation_diagnostic(
+-    rex::ui::AndroidPresentationDiagnosticEvent event, int32_t result,
+-    uintptr_t handle, uint32_t width, uint32_t height);
++}  // namespace rex::ui
+ 
+ #endif
+diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
+index c80cee2..afb10e7 100644
+--- a/src/ui/vulkan/vulkan_presenter.cpp
++++ b/src/ui/vulkan/vulkan_presenter.cpp
+@@ -802,7 +802,7 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
+         auto& android_native_window_surface =
+             static_cast<const AndroidNativeWindowSurface&>(new_surface);
+ #if defined(REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS)
+-        rexglue_android_presentation_diagnostic(
++        AndroidPresentationDiagnostic(
+             AndroidPresentationDiagnosticEvent::kVulkanPresenterEnter, 0,
+             reinterpret_cast<uintptr_t>(android_native_window_surface.window()),
+             new_surface_width, new_surface_height);
+@@ -815,7 +815,7 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
+         vulkan_surface_create_result = ifn.vkCreateAndroidSurfaceKHR(
+             instance, &surface_create_info, nullptr, &paint_context_.vulkan_surface);
+ #if defined(REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS)
+-        rexglue_android_presentation_diagnostic(
++        AndroidPresentationDiagnostic(
+             AndroidPresentationDiagnosticEvent::kVulkanSurfaceCreated,
+             int32_t(vulkan_surface_create_result),
+             reinterpret_cast<uintptr_t>(paint_context_.vulkan_surface),
+diff --git a/src/ui/window_sdl.cpp b/src/ui/window_sdl.cpp
+index ea320da..4c8d472 100644
+--- a/src/ui/window_sdl.cpp
++++ b/src/ui/window_sdl.cpp
+@@ -388,7 +388,7 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
+     if (surface) {
+       surface->GetSize(width, height);
+     }
+-    rexglue_android_presentation_diagnostic(
++    AndroidPresentationDiagnostic(
+         AndroidPresentationDiagnosticEvent::kSurfaceCreated,
+         surface ? 0 : -1,
+         surface ? reinterpret_cast<uintptr_t>(surface->window()) : 0,

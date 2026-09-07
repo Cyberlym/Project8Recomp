@@ -27,7 +27,7 @@ set_target_properties(main PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_D
 target_include_directories(main PRIVATE "${REXGLUE_SDK_ROOT}/src")
 target_compile_definitions(main PRIVATE REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS=1)
 target_compile_definitions(rexui PRIVATE REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS=1)
-target_link_libraries(main PRIVATE rexui log android)
+target_link_libraries(main PRIVATE rexruntime renderdoc log android)
 
 # A standalone backend test keeps fiber validation independent from the
 # monolithic rexcore target. It compiles the same implementation that rexcore
