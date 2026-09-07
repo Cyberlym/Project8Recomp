@@ -676,3 +676,11 @@ fiber continua **AINDA NÃO COMPROVADA**. Após a correção, o build incrementa
 nesse build. Conforme o escopo desta subetapa, esse novo blocker não foi
 alterado. A série completa 0001–0009 reaplicou com `git apply --check --index`
 sobre o commit oficial v0.10.0 e passou em `git diff --check`.
+
+`GetAndroidApiLevel` não tinha declaração nem definição no SDK; além disso,
+`threading_posix.cpp` incluía o header inexistente `rex/main_android.h`. O patch
+`0010-android-api-level.patch` expõe em `platform.h` um wrapper Android-only da
+API oficial `android_get_device_api_level()` (disponível para minSdk 26) e remove o
+include órfão. `memory_posix.cpp` passou a compilar; o próximo blocker comprovado
+é o uso incondicional de mutex POSIX robusto, cuja API não é exposta pelo NDK
+quando o target é API 26.
