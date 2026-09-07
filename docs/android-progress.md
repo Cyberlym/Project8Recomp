@@ -684,3 +684,9 @@ API oficial `android_get_device_api_level()` (disponível para minSdk 26) e remo
 include órfão. `memory_posix.cpp` passou a compilar; o próximo blocker comprovado
 é o uso incondicional de mutex POSIX robusto, cuja API não é exposta pelo NDK
 quando o target é API 26.
+
+O patch `0011-android-non-robust-mutex.patch` restringe a recuperação
+`EOWNERDEAD` a GNU/Linux, onde as APIs robustas existem. Android usa o caminho
+`std::mutex` já existente para plataformas sem mutex robusto; Windows, macOS e
+GNU/Linux não mudam de comportamento. Com isso, o target OBJECT `rexcore`
+compilou integralmente para Android ARM64/API 26.
