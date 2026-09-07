@@ -742,3 +742,21 @@ O empacotamento consolidado inclui `librexruntime.so` como dependência nativa
 de `libmain.so`, além do `libSDL3.so` já usado pela Activity. O ELF de
 `libmain.so` declara `DT_NEEDED` para `librexruntime.so`; o runtime, por sua
 vez, fecha com `--no-undefined` e não depende de X11, XCB ou Wayland.
+
+## 2026-09-07 — APK consolidado da Etapa 5 para teste físico
+
+O build incremental Android ARM64/API 26 concluiu `rexcore`, `rexui`,
+`VulkanProvider`, `VulkanPresenter`, `rexruntime`, o backend/teste de fibers e
+`libmain.so`. O APK assinado em
+`android/Project8VulkanProbe-arm64-v8a.apk` tem 24.339.147 bytes e SHA-256
+`2c69f99081fae34248b7db74c0ae3ea763e4d21f1e149c97e90e9f7b07d466b3`.
+O manifest confirma package `com.cyberlym.project8probe`, minSdk 26 e targetSdk
+35. Os hashes de `libmain.so`, `librexruntime.so` e `libSDL3.so` extraídos do
+APK coincidem com os artefatos do build; assinatura v2/v3 e alinhamento foram
+validados.
+
+Este resultado é **BUILD VERIFIED**, não verificação física. 5B.3, fibers,
+preflight Bionic e a sequência observacional de 5B.4 continuam **DEVICE TEST
+REQUIRED**. `Runtime::Setup()` permanece **NOT TESTED** porque atravessa de
+imediato memória virtual guest e fault handling; avançar nisso exige a decisão
+específica da próxima subetapa, não uma chamada exploratória neste probe.
