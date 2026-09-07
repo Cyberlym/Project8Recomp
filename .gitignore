@@ -14,6 +14,8 @@
 /generated/
 *thps_p8_recomp.*.cpp
 *_init.cpp
+/config/generated/
+/src/config/generated/
 
 # Anything from a disc
 *.iso

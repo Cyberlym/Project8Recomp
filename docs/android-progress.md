@@ -110,3 +110,51 @@ Arquivos privados gerados continuam ausentes e devem permanecer ignorados.
 CMake do helper gerado e os ignores correspondentes. Depois separar Android de
 GNU Linux no CMake do SDK, antes de implementar SDLActivity/surface. Qualquer
 compilação continua sujeita à autorização explícita e começa com `-j2`.
+
+## 2026-09-07 — Etapa 3: primeiro esqueleto Android
+
+**Arquivos alterados/criados:**
+
+- `src/game/CMakeLists.txt`: o helper agora é incluído de
+  `../../config/generated/rexglue.cmake`, que corresponde ao diretório gerado ao
+  lado de `config/thps_p8_manifest.toml`; o target desktop `thps_p8_launch` não é
+  criado quando o toolchain define `ANDROID`.
+- `.gitignore`: `config/generated/` e `src/config/generated/` ficaram ignorados
+  explicitamente, cobrindo o helper e evitando que uma geração futura crie
+  estado rastreável por engano.
+- `src/game/src/launcher/platform.h`: Android seleciona o backend genérico em
+  vez do backend Linux que varre `/proc` e `/dev/shm`. O supervisor não é um
+  caminho Android nesta etapa.
+- `src/game/src/thps_p8_app.h`: `prctl`, handlers SIGTERM/SIGINT e a dependência
+  de sinais foram limitados a Linux desktop; Android não herda esse lifecycle.
+- `android/CMakeLists.txt`: esqueleto isolado que exige NDK, `arm64-v8a`, API 26,
+  SDL3 e Vulkan, sem declarar target do jogo ou fontes geradas.
+- `android/README.md`: contrato e limites do esqueleto, incluindo o probe futuro.
+
+**Decisões:** a menor correção do layout é ajustar o include existente; não foi
+criada nenhuma pasta `generated`. A separação Android/Linux foi feita somente nos
+pontos identificados: supervisor e hooks específicos, sem tocar no POSIX comum,
+no runtime ou no backend Vulkan. O esqueleto Android permanece uma interface
+vazia para impedir que uma configuração acidental dispare codegen ou carregue
+conteúdo do jogo.
+
+**Itens deliberadamente não implementados:** Activity/SDLActivity, JNI,
+`ANativeWindow`, `VkSurfaceKHR`, runtime, launcher Android, leitor XISO/XDVDFS,
+SAF, memória virtual fixa, W^X, páginas de 16 KiB, fault recovery, signals
+complexos, touch, Turnip, AdrenoTools, Compose, assets e translation units.
+
+**Validação:** revisão de `git diff` e `git diff --check` após o grupo inicial;
+nenhuma configuração CMake foi executada. Não houve build, teste compilado,
+codegen, download grande, ISO, `default.xex`, conteúdo do jogo, limpeza ou push.
+
+**Blockers restantes:** o SDK ainda precisa de uma branch CMake Android própria,
+as pontes `AndroidNativeWindowSurface`/JNI e um entrypoint SDLActivity; o target
+do jogo continua dependente dos arquivos privados gerados. Memória/aliases,
+W^X, faults ARM64 e lifecycle só devem ser investigados em probe autorizado no
+Moto G34.
+
+**Próximo probe exato:** uma aplicação SDL3 nativa mínima, ligada ao contrato de
+`android/CMakeLists.txt`, que crie uma `SDL_Window`, obtenha o `ANativeWindow`
+Android, crie uma `VkInstance` com `VK_KHR_android_surface`, chame
+`vkCreateAndroidSurfaceKHR`, registre resize/pause/resume e destrua a surface
+corretamente. Ela não deve carregar ReXGlue, runtime, XISO ou arquivos do jogo.

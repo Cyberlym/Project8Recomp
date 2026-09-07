@@ -12,7 +12,7 @@
 #include <rex/rex_app.h>
 #include <rex/ui/keybinds.h>
 
-#ifdef __linux__
+#if defined(__linux__) && !defined(__ANDROID__)
 #include <csignal>
 #include <sys/prctl.h>
 #include <unistd.h>
@@ -46,7 +46,7 @@ REXCVAR_DEFINE_BOOL(mark_screenshot, false, "Input",
                     "Capture the guest output into <run dir>/marks/ every time a "
                     "replay mark fires or F9 stamps one");
 
-#ifdef __linux__
+#if defined(__linux__) && !defined(__ANDROID__)
 // The SDK installs no SIGTERM handler, so the default action kills the
 // process before any atexit work runs - which means an instrumented build
 // never writes its .profraw and PGO is impossible. Flush and leave.

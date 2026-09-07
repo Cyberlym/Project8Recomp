@@ -90,6 +90,8 @@ std::string SelfPath(const char* argv0);
 
 #if defined(_WIN32)
 #include "platform_windows.inc"
+#elif defined(__ANDROID__)
+#include "platform_generic.inc"
 #elif defined(__linux__)
 #include "platform_linux.inc"
 #elif defined(__APPLE__)

@@ -1,6 +1,6 @@
 # thps_p8 - ReXGlue Recompiled Project
 #
-# SDK boilerplate lives in ../config/generated/rexglue.cmake.
+# SDK boilerplate lives beside the repository's config directory.
 
 cmake_minimum_required(VERSION 3.25)
 project(thps_p8 LANGUAGES CXX)
@@ -8,7 +8,7 @@ project(thps_p8 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-include(../config/generated/rexglue.cmake)
+include(../../config/generated/rexglue.cmake)
 
 # A cross-built SDK contains target runtime libraries, but its rexglue command
 # is a target-platform executable that cannot run during a host-side build.
@@ -173,13 +173,15 @@ endif()
 # Links nothing from the SDK on purpose: it must still build and run when the
 # game does not, which is when it is most needed. A console app on Windows too
 # (no WIN32 flag) - it is a CLI wrapper and needs its stdio.
-add_executable(thps_p8_launch
-    src/launcher/main.cpp
-    src/launcher/platform.h
-    src/launcher/platform_linux.inc
-    src/launcher/platform_windows.inc
-    src/launcher/platform_apple.inc
-    src/launcher/platform_generic.inc
-)
-target_compile_features(thps_p8_launch PRIVATE cxx_std_23)
-thps_p8_anonymise_paths(thps_p8_launch)
+if(NOT ANDROID)
+    add_executable(thps_p8_launch
+        src/launcher/main.cpp
+        src/launcher/platform.h
+        src/launcher/platform_linux.inc
+        src/launcher/platform_windows.inc
+        src/launcher/platform_apple.inc
+        src/launcher/platform_generic.inc
+    )
+    target_compile_features(thps_p8_launch PRIVATE cxx_std_23)
+    thps_p8_anonymise_paths(thps_p8_launch)
+endif()
