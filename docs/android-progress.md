@@ -236,3 +236,19 @@ listagem ZIP. O tamanho final é 3.371.623 bytes.
 **Não implementado:** ReXGlue, runtime, game code, codegen, arquivos do jogo,
 launcher, touch customizado, Turnip/AdrenoTools, lifecycle do runtime, exportação
 do log e testes no Moto G34. Nenhum push foi feito.
+
+## 2026-09-07 — Diagnóstico visível no aparelho
+
+O APK instalou no Moto G34, mas a tela preta era consequência de o probe não
+renderizar interface. Foi adicionada uma sobreposição Android mínima sobre a
+SDLActivity, sem Compose: estados dos sete checkpoints, GPU, IDs, versões Vulkan
+e status da surface são atualizados por JNI a cada 500 ms. O nativo continua
+gravando `probe.log` com flush imediato; `EXPORT LOG` usa
+`ACTION_CREATE_DOCUMENT` e copia o log real para a pasta escolhida, enquanto
+`COPY REPORT` envia o resumo para a área de transferência.
+
+Arquivos alterados: `android/probe/probe.cpp` e
+`android/probe/app/src/main/java/com/cyberlym/project8probe/ProbeActivity.java`.
+O manifesto mantém landscape e o package temporário. Build incremental com
+Ninja, D8, aapt2, zipalign e apksigner concluído; assinatura v2/v3 válida.
+Não foram tocados ReXGlue, game code, ISO, codegen ou lógica Vulkan.
