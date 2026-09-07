@@ -1,0 +1,143 @@
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index 3fb9ec5..1f45ffb 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -102,8 +102,9 @@ target_include_directories(rexcore PRIVATE
+ if(APPLE)
+     target_link_libraries(rexcore PRIVATE pthread)
+ elseif(ANDROID)
++    target_sources(rexcore PRIVATE filesystem_android.cpp)
+     target_link_libraries(rexcore PUBLIC libucontext)
+-    target_link_libraries(rexcore PRIVATE dl)
++    target_link_libraries(rexcore PRIVATE SDL3::SDL3 dl)
+ elseif(UNIX)
+     target_link_libraries(rexcore PRIVATE pthread rt dl)
+ endif()
+diff --git a/src/core/filesystem_android.cpp b/src/core/filesystem_android.cpp
+new file mode 100644
+index 0000000..78bfdc1
+--- /dev/null
++++ b/src/core/filesystem_android.cpp
+@@ -0,0 +1,118 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2022 Ben Vanik. All rights reserved.                             *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++#include <rex/platform.h>
++
++#if REX_PLATFORM_ANDROID
++
++#include <jni.h>
++
++#include <SDL3/SDL_system.h>
++
++#include <rex/filesystem.h>
++
++#include <string>
++
++namespace rex::filesystem {
++
++void AndroidInitialize() {}
++
++void AndroidShutdown() {}
++
++bool IsAndroidContentUri(const std::string_view source) {
++  constexpr std::string_view kContentScheme = "content://";
++  return source.starts_with(kContentScheme);
++}
++
++int OpenAndroidContentFileDescriptor(const std::string_view uri, const char* mode) {
++  if (!IsAndroidContentUri(uri) || !mode) {
++    return -1;
++  }
++
++  auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
++  auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
++  if (!env || !activity) {
++    return -1;
++  }
++
++  int file_descriptor = -1;
++  jclass activity_class = env->GetObjectClass(activity);
++  jclass uri_class = env->FindClass("android/net/Uri");
++  jclass parcel_file_descriptor_class = env->FindClass("android/os/ParcelFileDescriptor");
++  jstring uri_string = env->NewStringUTF(std::string(uri).c_str());
++  jstring mode_string = env->NewStringUTF(mode);
++  jobject content_resolver = nullptr;
++  jobject parsed_uri = nullptr;
++  jobject parcel_file_descriptor = nullptr;
++
++  if (activity_class && uri_class && parcel_file_descriptor_class && uri_string &&
++      mode_string && !env->ExceptionCheck()) {
++    jmethodID get_content_resolver = env->GetMethodID(
++        activity_class, "getContentResolver", "()Landroid/content/ContentResolver;");
++    jmethodID parse_uri = env->GetStaticMethodID(
++        uri_class, "parse", "(Ljava/lang/String;)Landroid/net/Uri;");
++    if (get_content_resolver && parse_uri && !env->ExceptionCheck()) {
++      content_resolver = env->CallObjectMethod(activity, get_content_resolver);
++      parsed_uri = env->CallStaticObjectMethod(uri_class, parse_uri, uri_string);
++    }
++
++    if (content_resolver && parsed_uri && !env->ExceptionCheck()) {
++      jclass content_resolver_class = env->GetObjectClass(content_resolver);
++      if (content_resolver_class) {
++        jmethodID open_file_descriptor = env->GetMethodID(
++            content_resolver_class, "openFileDescriptor",
++            "(Landroid/net/Uri;Ljava/lang/String;)Landroid/os/ParcelFileDescriptor;");
++        if (open_file_descriptor && !env->ExceptionCheck()) {
++          parcel_file_descriptor = env->CallObjectMethod(
++              content_resolver, open_file_descriptor, parsed_uri, mode_string);
++        }
++        env->DeleteLocalRef(content_resolver_class);
++      }
++    }
++
++    if (parcel_file_descriptor && !env->ExceptionCheck()) {
++      jmethodID detach_fd =
++          env->GetMethodID(parcel_file_descriptor_class, "detachFd", "()I");
++      if (detach_fd && !env->ExceptionCheck()) {
++        file_descriptor = env->CallIntMethod(parcel_file_descriptor, detach_fd);
++      }
++    }
++  }
++
++  if (env->ExceptionCheck()) {
++    env->ExceptionClear();
++    file_descriptor = -1;
++  }
++  if (parcel_file_descriptor) {
++    env->DeleteLocalRef(parcel_file_descriptor);
++  }
++  if (parsed_uri) {
++    env->DeleteLocalRef(parsed_uri);
++  }
++  if (content_resolver) {
++    env->DeleteLocalRef(content_resolver);
++  }
++  if (mode_string) {
++    env->DeleteLocalRef(mode_string);
++  }
++  if (uri_string) {
++    env->DeleteLocalRef(uri_string);
++  }
++  if (parcel_file_descriptor_class) {
++    env->DeleteLocalRef(parcel_file_descriptor_class);
++  }
++  if (uri_class) {
++    env->DeleteLocalRef(uri_class);
++  }
++  if (activity_class) {
++    env->DeleteLocalRef(activity_class);
++  }
++  env->DeleteLocalRef(activity);
++  return file_descriptor;
++}
++
++}  // namespace rex::filesystem
++
++#endif  // REX_PLATFORM_ANDROID

@@ -690,3 +690,13 @@ O patch `0011-android-non-robust-mutex.patch` restringe a recuperação
 `std::mutex` já existente para plataformas sem mutex robusto; Windows, macOS e
 GNU/Linux não mudam de comportamento. Com isso, o target OBJECT `rexcore`
 compilou integralmente para Android ARM64/API 26.
+
+No primeiro link completo de `rexruntime`, `mapped_memory_posix.cpp` expôs uma
+declaração Android sem implementação no SDK: abertura de `content://` como file
+descriptor. O patch `0012-android-content-file-descriptor.patch` implementa o
+contrato com o `JNIEnv` e a Activity fornecidos pelo SDL3,
+`ContentResolver.openFileDescriptor` e `ParcelFileDescriptor.detachFd`; o fd
+passa ao `MappedMemory`, que já o fecha. A fonte e o vínculo com SDL3 são
+selecionados somente no Android. Ela compilou e removeu o símbolo indefinido;
+o link avançou até seu único erro restante, o callback opt-in do diagnóstico de
+apresentação definido fora de `librexruntime.so`.
