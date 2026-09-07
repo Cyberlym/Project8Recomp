@@ -384,3 +384,31 @@ a `VkSurfaceKHR` somente pelo presenter, e comprovar em aparelho perda/recriaç�
 durante pause/resume e orientation sem use-after-free. Rollback consiste em
 remover o novo backend e os ramos `ANDROID`; nenhum contrato desktop precisa ser
 alterado.
+
+## 2026-09-07 — Etapa 5B.1: backend Android mínimo
+
+Foi adicionada à série do SDK a patch
+`0003-android-native-window-surface.patch`. Ela introduz
+`AndroidNativeWindowSurface`, que implementa a interface `Surface`, toma
+emprestadas a `SDL_Window*` e a `ANativeWindow*` e obtém dimensões físicas por
+`SDL_GetWindowSizeInPixels`. `WindowSDL::CreateSurfaceImpl` só cria o wrapper
+quando `SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER` retorna um ponteiro não nulo.
+
+No CMake de `rexui`, `ANDROID` seleciona apenas `surface_android.cpp`; a busca e
+o link de X11-XCB/Wayland ficam restritos a Unix desktop por
+`UNIX AND NOT APPLE AND NOT ANDROID`. Os ramos Windows, macOS e GNU/Linux não
+tiveram seus backends alterados.
+
+**Validação:** a série completa aplicou sem conflito, na ordem documentada,
+sobre o commit oficial `f5337cdc947ff6d4c4196737e2c807a48f2a1fc2` da tag
+`v0.10.0`, e passou em `git diff --check`. `surface_android.cpp` passou em
+compilação sintática isolada com o Clang AArch64 Android API 26 do NDK
+27.2.12479018 e os headers SDL3 já existentes. O SDK completo não foi
+configurado ou compilado: seus submódulos continuam ausentes e esta subetapa não
+autoriza downloads. Portanto ainda não está comprovado que `window_sdl.cpp` ou
+`rexui` completo linkam no Android.
+
+**Limite desta subetapa:** nenhum APK ou runtime foi produzido. Obter e exibir a
+`ANativeWindow*` real e o tamanho físico pertence à 5B.2; criação Vulkan pelo
+presenter pertence à 5B.3; destruição/recriação em lifecycle físico pertence à
+5B.4.

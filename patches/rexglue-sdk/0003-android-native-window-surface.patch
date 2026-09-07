@@ -1,0 +1,122 @@
+diff --git a/include/rex/ui/surface_android.h b/include/rex/ui/surface_android.h
+new file mode 100644
+index 0000000..247ac3b
+--- /dev/null
++++ b/include/rex/ui/surface_android.h
+@@ -0,0 +1,29 @@
++#pragma once
++
++#include <rex/ui/surface.h>
++
++struct ANativeWindow;
++struct SDL_Window;
++
++namespace rex::ui {
++
++class AndroidNativeWindowSurface final : public Surface {
++ public:
++  AndroidNativeWindowSurface(SDL_Window* sdl_window,
++                             ANativeWindow* native_window)
++      : sdl_window_(sdl_window), native_window_(native_window) {}
++
++  TypeIndex GetType() const override { return kTypeIndex_AndroidNativeWindow; }
++  ANativeWindow* window() const { return native_window_; }
++
++ protected:
++  bool GetSizeImpl(uint32_t& width_out, uint32_t& height_out) const override;
++
++ private:
++  // SDL owns both handles. Window tears this wrapper down before
++  // SDL_DestroyWindow.
++  SDL_Window* sdl_window_;
++  ANativeWindow* native_window_;
++};
++
++}  // namespace rex::ui
+diff --git a/src/ui/CMakeLists.txt b/src/ui/CMakeLists.txt
+index 5bd3dc5..776ff0d 100644
+--- a/src/ui/CMakeLists.txt
++++ b/src/ui/CMakeLists.txt
+@@ -64,7 +64,11 @@ if(REXGLUE_USE_D3D12)
+ endif()
+ 
+ # Platform-specific sources (windowing itself is SDL3, platform-independent)
+-if(WIN32)
++if(ANDROID)
++    set(REXUI_PLATFORM_SOURCES
++        surface_android.cpp
++    )
++elseif(WIN32)
+     set(REXUI_PLATFORM_SOURCES
+         surface_win.cpp
+     )
+@@ -146,7 +150,7 @@ if(REXGLUE_USE_VULKAN)
+ endif()
+ 
+ # Platform-specific dependencies
+-if(UNIX AND NOT APPLE)
++if(UNIX AND NOT APPLE AND NOT ANDROID)
+     find_package(PkgConfig REQUIRED)
+     pkg_check_modules(X11_XCB REQUIRED x11-xcb)
+     # Required, not optional: vulkan/api.h pulls in <wayland-client.h> on every
+diff --git a/src/ui/surface_android.cpp b/src/ui/surface_android.cpp
+new file mode 100644
+index 0000000..44afaac
+--- /dev/null
++++ b/src/ui/surface_android.cpp
+@@ -0,0 +1,21 @@
++#include <SDL3/SDL_video.h>
++
++#include <rex/ui/surface_android.h>
++
++namespace rex::ui {
++
++bool AndroidNativeWindowSurface::GetSizeImpl(uint32_t& width_out,
++                                             uint32_t& height_out) const {
++  int pixel_width = 0;
++  int pixel_height = 0;
++  if (!sdl_window_ || !native_window_ ||
++      !SDL_GetWindowSizeInPixels(sdl_window_, &pixel_width, &pixel_height) ||
++      pixel_width <= 0 || pixel_height <= 0) {
++    return false;
++  }
++  width_out = uint32_t(pixel_width);
++  height_out = uint32_t(pixel_height);
++  return true;
++}
++
++}  // namespace rex::ui
+diff --git a/src/ui/window_sdl.cpp b/src/ui/window_sdl.cpp
+index 2251429..6e2e1d4 100644
+--- a/src/ui/window_sdl.cpp
++++ b/src/ui/window_sdl.cpp
+@@ -28,7 +28,9 @@
+ #include <rex/ui/flags.h>
+ #include <rex/ui/sdl_virtual_key.h>
+ 
+-#if REX_PLATFORM_WIN32
++#if REX_PLATFORM_ANDROID
++#include <rex/ui/surface_android.h>
++#elif REX_PLATFORM_WIN32
+ #include <rex/ui/surface_win.h>
+ #elif REX_PLATFORM_MAC
+ #include <CoreFoundation/CoreFoundation.h>
+@@ -376,7 +378,17 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
+   if (!sdl_window_) {
+     return nullptr;
+   }
+-#if REX_PLATFORM_WIN32
++#if REX_PLATFORM_ANDROID
++  if (allowed_types & Surface::kTypeFlag_AndroidNativeWindow) {
++    auto* native_window = static_cast<ANativeWindow*>(SDL_GetPointerProperty(
++        SDL_GetWindowProperties(sdl_window_),
++        SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr));
++    if (native_window) {
++      return std::make_unique<AndroidNativeWindowSurface>(sdl_window_,
++                                                          native_window);
++    }
++  }
++#elif REX_PLATFORM_WIN32
+   SDL_PropertiesID props = SDL_GetWindowProperties(sdl_window_);
+   if (allowed_types & Surface::kTypeFlag_Win32Hwnd) {
+     HWND hwnd = static_cast<HWND>(
