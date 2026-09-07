@@ -24,6 +24,7 @@ std::string g_report = "Project 8 Android Vulkan Probe\n";
 std::string g_error;
 std::string g_gpu;
 std::string g_surface = "WAITING";
+std::string g_vulkan_evidence;
 std::vector<std::string> g_ok_checkpoints;
 
 void RefreshReport() {
@@ -36,7 +37,7 @@ void RefreshReport() {
     report += std::string(checkpoint) + ": " +
               (std::find(g_ok_checkpoints.begin(), g_ok_checkpoints.end(), checkpoint) != g_ok_checkpoints.end() ? "OK\n" : "WAITING\n");
   }
-  report += "\n" + g_gpu + "\nSURFACE: " + g_surface;
+  report += "\n" + g_vulkan_evidence + "\n" + g_gpu + "\nSURFACE: " + g_surface;
   if (!g_error.empty()) report += "\n\n" + g_error;
   g_report = report;
 }
@@ -126,6 +127,13 @@ bool CreateSurface(SDL_Window* window, VkInstance instance, VkSurfaceKHR* surfac
             g_last_checkpoint.c_str(), SDL_GetError());
     return false;
   }
+  if (*surface == VK_NULL_HANDLE) {
+    LogError("SDL_Vulkan_CreateSurface returned success with a null VkSurfaceKHR");
+    return false;
+  }
+  LogLine("ANDROID_SURFACE_CREATE SDL_result=success surface_valid=true");
+  { std::lock_guard<std::mutex> lock(g_state_mutex);
+    g_vulkan_evidence += "ANDROID_SURFACE_CREATE: SDL success, VkSurfaceKHR valid\n"; }
   Checkpoint("ANDROID_SURFACE_OK");
   { std::lock_guard<std::mutex> lock(g_state_mutex); g_surface = "OK"; }
   RefreshReport();
@@ -135,6 +143,10 @@ bool CreateSurface(SDL_Window* window, VkInstance instance, VkSurfaceKHR* surfac
 bool EnumerateGpus(VkInstance instance) {
   uint32_t count = 0;
   VkResult result = vkEnumeratePhysicalDevices(instance, &count, nullptr);
+  LogLine("GPU_ENUM_FIRST VkResult=%d deviceCount=%u", static_cast<int>(result), count);
+  { std::lock_guard<std::mutex> lock(g_state_mutex);
+    g_vulkan_evidence += "GPU_ENUM_FIRST: VkResult=" + std::to_string(static_cast<int>(result)) +
+                         " deviceCount=" + std::to_string(count) + "\n"; }
   if (result != VK_SUCCESS || count == 0) {
     LogVulkanError("vkEnumeratePhysicalDevices", result);
     return false;
@@ -142,7 +154,13 @@ bool EnumerateGpus(VkInstance instance) {
 
   std::vector<VkPhysicalDevice> devices(count);
   result = vkEnumeratePhysicalDevices(instance, &count, devices.data());
-  if (result != VK_SUCCESS) {
+  LogLine("GPU_ENUM_SECOND VkResult=%d deviceCount=%u", static_cast<int>(result), count);
+  { std::lock_guard<std::mutex> lock(g_state_mutex);
+    g_vulkan_evidence += "GPU_ENUM_SECOND: VkResult=" + std::to_string(static_cast<int>(result)) +
+                         " deviceCount=" + std::to_string(count) + "\n"; }
+  if (result != VK_SUCCESS || count == 0 || count > devices.size() ||
+      std::any_of(devices.begin(), devices.begin() + count,
+                  [](VkPhysicalDevice device) { return device == VK_NULL_HANDLE; })) {
     LogVulkanError("vkEnumeratePhysicalDevices", result);
     return false;
   }
@@ -155,19 +173,26 @@ bool EnumerateGpus(VkInstance instance) {
     std::vector<VkExtensionProperties> extensions(extension_count);
     vkEnumerateDeviceExtensionProperties(device, nullptr, &extension_count,
                                          extensions.data());
-    LogLine("GPU name=%s vendor_id=0x%04x device_id=0x%04x api=%u.%u.%u "
-            "driver=%u.%u.%u type=%d extensions=%u",
-            properties.deviceName, properties.vendorID, properties.deviceID,
+    LogLine("GPU name=%s vendor_id=%u (0x%04x) device_id=%u (0x%04x) "
+            "api_original=%u (0x%08x) api_decoded=%u.%u.%u "
+            "driver_original=%u (0x%08x) driver_decoded=%u.%u.%u type=%d extensions=%u",
+            properties.deviceName, properties.vendorID, properties.vendorID,
+            properties.deviceID, properties.deviceID,
+            properties.apiVersion, properties.apiVersion,
             VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion),
             VK_VERSION_PATCH(properties.apiVersion),
+            properties.driverVersion, properties.driverVersion,
             VK_VERSION_MAJOR(properties.driverVersion),
             VK_VERSION_MINOR(properties.driverVersion),
             VK_VERSION_PATCH(properties.driverVersion), properties.deviceType,
             extension_count);
     { std::lock_guard<std::mutex> lock(g_state_mutex);
       g_gpu = std::string("GPU: ") + properties.deviceName + "\nVENDOR ID: " +
-              std::to_string(properties.vendorID) + "\nDEVICE ID: " +
-              std::to_string(properties.deviceID) + "\nVULKAN API: " +
+              std::to_string(properties.vendorID) + " (0x" +
+              [&] { char value[16]; std::snprintf(value, sizeof(value), "%04x", properties.vendorID); return std::string(value); }() +
+              ")\nDEVICE ID: " + std::to_string(properties.deviceID) + " (0x" +
+              [&] { char value[16]; std::snprintf(value, sizeof(value), "%04x", properties.deviceID); return std::string(value); }() +
+              ")\nVULKAN API: " +
               std::to_string(VK_VERSION_MAJOR(properties.apiVersion)) + "." +
               std::to_string(VK_VERSION_MINOR(properties.apiVersion)) + "." +
               std::to_string(VK_VERSION_PATCH(properties.apiVersion)) + "\nDRIVER: " +
@@ -192,6 +217,7 @@ int RunProbe() {
     CloseLog();
     return 1;
   }
+  LogLine("SDL_INIT result=success");
   Checkpoint("SDL_INIT_OK");
 
   SDL_Window* window = SDL_CreateWindow("Project8 Android Vulkan Probe", 640, 360,
@@ -203,6 +229,7 @@ int RunProbe() {
     CloseLog();
     return 1;
   }
+  LogLine("SDL_WINDOW result=success window_valid=true");
   Checkpoint("SDL_WINDOW_OK");
 
   Uint32 extension_count = 0;
@@ -256,8 +283,20 @@ int RunProbe() {
   instance_info.ppEnabledExtensionNames = extensions.data();
   VkInstance instance = VK_NULL_HANDLE;
   result = vkCreateInstance(&instance_info, nullptr, &instance);
+  LogLine("VK_INSTANCE_CREATE VkResult=%d instance_valid=%s", static_cast<int>(result),
+          instance != VK_NULL_HANDLE ? "true" : "false");
+  { std::lock_guard<std::mutex> lock(g_state_mutex);
+    g_vulkan_evidence = "VK_INSTANCE_CREATE: VkResult=" + std::to_string(static_cast<int>(result)) +
+                        " instance_valid=" + (instance != VK_NULL_HANDLE ? "true\n" : "false\n"); }
   if (result != VK_SUCCESS) {
     LogVulkanError("vkCreateInstance", result);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+    CloseLog();
+    return 1;
+  }
+  if (instance == VK_NULL_HANDLE) {
+    LogError("vkCreateInstance returned VK_SUCCESS with a null VkInstance");
     SDL_DestroyWindow(window);
     SDL_Quit();
     CloseLog();

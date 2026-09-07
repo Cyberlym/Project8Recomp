@@ -247,8 +247,26 @@ gravando `probe.log` com flush imediato; `EXPORT LOG` usa
 `ACTION_CREATE_DOCUMENT` e copia o log real para a pasta escolhida, enquanto
 `COPY REPORT` envia o resumo para a área de transferência.
 
-Arquivos alterados: `android/probe/probe.cpp` e
-`android/probe/app/src/main/java/com/cyberlym/project8probe/ProbeActivity.java`.
-O manifesto mantém landscape e o package temporário. Build incremental com
-Ninja, D8, aapt2, zipalign e apksigner concluído; assinatura v2/v3 válida.
-Não foram tocados ReXGlue, game code, ISO, codegen ou lógica Vulkan.
+## 2026-09-07 — Auditoria de integridade do Vulkan Probe
+
+| checkpoint | função/API real | condição de sucesso | condição de falha | evidência encontrada | status de validação |
+|---|---|---|---|---|---|
+| `ANDROID_ENTRY` | `main()` → `RunProbe()` | `RunProbe` foi alcançado pelo entrypoint nativo | não há checkpoint se o processo não entrar no `main` | `Checkpoint` é a primeira operação de probe | validado estaticamente |
+| `SDL_INIT_OK` | `SDL_Init(SDL_INIT_VIDEO \| SDL_INIT_EVENTS)` | retorno diferente de zero | retorno zero; erro de SDL é registrado | checkpoint imediatamente após o teste | validado estaticamente |
+| `SDL_WINDOW_OK` | `SDL_CreateWindow` | ponteiro `SDL_Window*` não nulo | ponteiro nulo; erro de SDL é registrado | checkpoint imediatamente após o teste | validado estaticamente |
+| `VULKAN_INSTANCE_OK` | `vkCreateInstance` | `VkResult == VK_SUCCESS` e `VkInstance != VK_NULL_HANDLE` | resultado diferente de sucesso ou handle nulo | `VK_INSTANCE_CREATE` registra resultado/validade antes do checkpoint | validado estaticamente |
+| `ANDROID_SURFACE_OK` | `SDL_Vulkan_CreateSurface` | retorno SDL bem-sucedido e `VkSurfaceKHR != VK_NULL_HANDLE` | retorno SDL falso ou handle nulo | `ANDROID_SURFACE_CREATE` registra sucesso/validade; surface é testada antes do checkpoint | validado estaticamente |
+| `GPU_ENUM_OK` | duas chamadas a `vkEnumeratePhysicalDevices` | primeira e segunda `VK_SUCCESS`, contagem > 0 e todo handle obtido não nulo; propriedades vêm de `vkGetPhysicalDeviceProperties` | resultado diferente de sucesso, contagem zero, contagem inconsistente ou handle nulo | relatório/log registram ambos os resultados e contagens; IDs/nome/versões vêm de `VkPhysicalDeviceProperties` | validado estaticamente |
+| `PROBE_READY` | sequência `CreateSurface` + `EnumerateGpus` | ambas retornam verdadeiro após todos os checkpoints anteriores | qualquer etapa retorna falso e o probe encerra sem emitir o checkpoint | emissão ocorre somente no `if` que testa as duas funções | validado estaticamente |
+
+Não foram encontradas constantes ou strings específicas de Adreno 619, vendor
+20803/`0x5143` ou device 100731137 no probe. O nome, IDs, `apiVersion` e
+`driverVersion` exibidos são lidos em runtime de `vkGetPhysicalDeviceProperties`;
+o relatório também mostra os valores originais e decodificados. A criação de
+surface usa a API SDL, que retorna sucesso/erro booleano e entrega o handle;
+o probe não inventa um `VkResult` que essa API não fornece.
+
+**Status:** a integridade lógica dos sete checkpoints está validada estaticamente
+após a correção dos testes de handles e enumeração. A execução física atual no
+Moto G34 continua sendo evidência relatada nos registros da Etapa 4, não foi
+reproduzida nesta sessão.
