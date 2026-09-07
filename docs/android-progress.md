@@ -333,3 +333,54 @@ e seus targets OBJECT), mas não existe ainda um subconjunto Android suportado e
 linkável no grafo atual: UI/surface e dependências desktop precisam de uma
 decisão e correção arquitetural. Nenhum build pesado, configuração CMake,
 alteração do SDK, codegen ou fonte do projeto foi executado nesta auditoria.
+
+## 2026-09-07 — Etapa 5B: decisão de surface/UI Android
+
+**Decisão arquitetural:** adicionar ao SDK um backend real
+`AndroidNativeWindowSurface` (`surface_android.h/.cpp`) e selecioná-lo em
+`WindowSDL::CreateSurfaceImpl` via `REX_PLATFORM_ANDROID`. O objeto deve tomar
+emprestados a `SDL_Window*` e a `ANativeWindow*` obtida da propriedade SDL
+`SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER`; o tamanho continua vindo de
+`SDL_GetWindowSizeInPixels`. Não deve possuir nem criar `VkInstance` ou
+`VkSurfaceKHR`.
+
+**Evidência de ownership:** `WindowSDL` cria e destrói a `SDL_Window` e registra
+seus eventos; `Window` possui o `Surface` em `presenter_surface_`; `Presenter`
+mantém somente ponteiros emprestados para `Window`/`Surface`. O
+`VulkanProvider` cria internamente `VulkanInstance`; `VulkanPresenter` já aceita
+`kTypeIndex_AndroidNativeWindow`, chama `vkCreateAndroidSurfaceKHR` e possui a
+`VkSurfaceKHR`, destruindo swapchain e surface com `vkDestroySurfaceKHR` ao
+desconectar. Logo, receber uma `VkInstance` ou `VkSurfaceKHR` externa contrariaria
+o fluxo atual e exigiria novas APIs de ownership.
+
+**Lifecycle:** antes de SDL destruir ou substituir o `ANativeWindow`, Android
+deve chamar `Window::OnSurfaceChanged(false)`, que desconecta o presenter e
+destrói a swapchain/`VkSurfaceKHR`; quando uma nova native window válida existir,
+deve chamar `OnSurfaceChanged(true)`. Resize em pixels já percorre
+`SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED` → `OnActualSizeUpdate` →
+`Presenter::OnSurfaceResizeFromUIThread`. O mapeamento exato dos eventos SDL de
+background/foreground para perda e retorno da native window ainda precisa ser
+confirmado no aparelho; o código atual trata minimized/restored apenas como
+notificações e não recria a surface.
+
+**CMake mínimo:** em `src/ui/CMakeLists.txt`, selecionar `surface_android.cpp`
+antes do ramo GNU/Linux e limitar `pkg-config`, X11-XCB e Wayland a
+`UNIX AND NOT APPLE AND NOT ANDROID`. Em `window_sdl.cpp`, selecionar
+`surface_android.h` antes do fallback GNU/Linux. Windows, macOS e GNU/Linux
+mantêm seus backends atuais.
+
+**Opções comparadas:** reutilizar uma janela/surface externa da Activity exigiria
+injeção em `Window`, `Presenter` e `VulkanProvider`, além de definir ownership de
+handles que hoje é interno. O backend Android acompanha a abstração já usada por
+Win32, Wayland/XCB e macOS, reutiliza diretamente o caminho Vulkan Android já
+presente e confina a mudança à seleção de plataforma, ao wrapper de native
+window e ao lifecycle Android. Turnip/AdrenoTools continuam sendo uma decisão do
+loader/device Vulkan e não exigem mudar essa abstração de surface; isso é uma
+inferência arquitetural, ainda não uma compatibilidade validada.
+
+**Critério para implementação:** compilar sem X11/Wayland, obter
+`ANativeWindow*` não nula da `SDL_Window`, reportar tamanho real, criar e destruir
+a `VkSurfaceKHR` somente pelo presenter, e comprovar em aparelho perda/recriação
+durante pause/resume e orientation sem use-after-free. Rollback consiste em
+remover o novo backend e os ramos `ANDROID`; nenhum contrato desktop precisa ser
+alterado.
