@@ -1,0 +1,100 @@
+diff --git a/src/ui/android_presentation_diagnostics.h b/src/ui/android_presentation_diagnostics.h
+new file mode 100644
+index 0000000..00aedb3
+--- /dev/null
++++ b/src/ui/android_presentation_diagnostics.h
+@@ -0,0 +1,21 @@
++#pragma once
++
++#include <cstdint>
++
++#if REX_PLATFORM_ANDROID && defined(REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS)
++
++namespace rex::ui {
++
++enum class AndroidPresentationDiagnosticEvent : uint32_t {
++  kSurfaceCreated = 1,
++  kVulkanPresenterEnter = 2,
++  kVulkanSurfaceCreated = 3,
++};
++
++}  // namespace rex::ui
++
++extern "C" void rexglue_android_presentation_diagnostic(
++    rex::ui::AndroidPresentationDiagnosticEvent event, int32_t result,
++    uintptr_t handle, uint32_t width, uint32_t height);
++
++#endif
+diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
+index 23645ef..c80cee2 100644
+--- a/src/ui/vulkan/vulkan_presenter.cpp
++++ b/src/ui/vulkan/vulkan_presenter.cpp
+@@ -35,6 +35,7 @@
+
+ #if REX_PLATFORM_ANDROID
+ #include <rex/ui/surface_android.h>
++#include "ui/android_presentation_diagnostics.h"
+ #endif
+ #if REX_PLATFORM_GNU_LINUX
+ #include <rex/ui/surface_gnulinux.h>
+@@ -800,6 +801,12 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
+       case Surface::kTypeIndex_AndroidNativeWindow: {
+         auto& android_native_window_surface =
+             static_cast<const AndroidNativeWindowSurface&>(new_surface);
++#if defined(REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS)
++        rexglue_android_presentation_diagnostic(
++            AndroidPresentationDiagnosticEvent::kVulkanPresenterEnter, 0,
++            reinterpret_cast<uintptr_t>(android_native_window_surface.window()),
++            new_surface_width, new_surface_height);
++#endif
+         VkAndroidSurfaceCreateInfoKHR surface_create_info;
+         surface_create_info.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
+         surface_create_info.pNext = nullptr;
+@@ -807,6 +814,13 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
+         surface_create_info.window = android_native_window_surface.window();
+         vulkan_surface_create_result = ifn.vkCreateAndroidSurfaceKHR(
+             instance, &surface_create_info, nullptr, &paint_context_.vulkan_surface);
++#if defined(REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS)
++        rexglue_android_presentation_diagnostic(
++            AndroidPresentationDiagnosticEvent::kVulkanSurfaceCreated,
++            int32_t(vulkan_surface_create_result),
++            reinterpret_cast<uintptr_t>(paint_context_.vulkan_surface),
++            new_surface_width, new_surface_height);
++#endif
+       } break;
+ #endif
+ #if REX_PLATFORM_GNU_LINUX
+diff --git a/src/ui/window_sdl.cpp b/src/ui/window_sdl.cpp
+index e3dc4b1..ea320da 100644
+--- a/src/ui/window_sdl.cpp
++++ b/src/ui/window_sdl.cpp
+@@ -30,6 +30,7 @@
+
+ #if REX_PLATFORM_ANDROID
+ #include <rex/ui/surface_android.h>
++#include "ui/android_presentation_diagnostics.h"
+ #elif REX_PLATFORM_WIN32
+ #include <rex/ui/surface_win.h>
+ #elif REX_PLATFORM_MAC
+@@ -380,7 +381,20 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
+   }
+ #if REX_PLATFORM_ANDROID
+   if (allowed_types & Surface::kTypeFlag_AndroidNativeWindow) {
+-    return AndroidNativeWindowSurface::Create(sdl_window_);
++    auto surface = AndroidNativeWindowSurface::Create(sdl_window_);
++#if defined(REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS)
++    uint32_t width = 0;
++    uint32_t height = 0;
++    if (surface) {
++      surface->GetSize(width, height);
++    }
++    rexglue_android_presentation_diagnostic(
++        AndroidPresentationDiagnosticEvent::kSurfaceCreated,
++        surface ? 0 : -1,
++        surface ? reinterpret_cast<uintptr_t>(surface->window()) : 0,
++        width, height);
++#endif
++    return surface;
+   }
+ #elif REX_PLATFORM_WIN32
+   SDL_PropertiesID props = SDL_GetWindowProperties(sdl_window_);

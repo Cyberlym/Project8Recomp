@@ -1,3 +1,8 @@
 0001-thp8-runtime-stack.patch
 0002-macos-update-moltenvk-1.4.2.patch
 0003-android-native-window-surface.patch
+0004-android-cmake-platform.patch
+0005-android-float-from-chars.patch
+0006-android-chrono-clock-cast.patch
+0007-android-presentation-diagnostics.patch
+0008-android-libcxx-jthread.patch

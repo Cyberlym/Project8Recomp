@@ -578,3 +578,56 @@ A dependência externa poderia cair de 13 para aproximadamente oito pelo exame d
 includes, mas essa estimativa não é uma prova de link e depende da refatoração
 C++/OBJECT descrita acima. Logo o critério de redução comprovada e preservação
 integral de desktop não foi satisfeito.
+
+## 2026-09-07 — Etapa 5B.3 Rota A: build monolítico e blocker de fibers
+
+Foi escolhida a configuração oficial monolítica, sem granularizar `rexcore` ou
+`rexui`. Foram inicializados nas revisões fixadas por `v0.10.0` os submódulos
+diretamente usados por esses targets (`cli11`, `fmt`, `imgui`, `sdl3`, `simde`,
+`spdlog`, `spirv-headers`, `spirv-tools`, `tomlplusplus`, `utfcpp`,
+`vulkan-headers`, `vulkan-memory-allocator` e `xxHash`) e os exigidos apenas pela
+configuração top-level (`FFmpeg`, `glslang`, `inja`, `libmspack` e `o1heap`). O
+checkout raso ocupava aproximadamente 507 MB antes dos artefatos de build.
+Catch2, Tracy, MoltenVK e Vulkan Loader não foram inicializados porque testes,
+profiling e caminhos Apple estavam desligados.
+
+O patch `0004-android-cmake-platform.patch` identifica `android-arm64`, mantém
+SDL3 compartilhada para que Activity e `rexui` usem um único estado SDL e
+impede que Android configure X11, XCB, Wayland, ALSA, PulseAudio ou PipeWire.
+Windows, GNU/Linux desktop e macOS permanecem nos ramos anteriores. Os patches
+`0005-android-float-from-chars.patch` e
+`0006-android-chrono-clock-cast.patch` cobrem lacunas comprovadas do libc++ do
+NDK em parsing de ponto flutuante e `clock_cast`. O patch
+`0008-android-libcxx-jthread.patch` reutiliza exatamente o tratamento já usado
+no Apple para expor `std::jthread`/`std::stop_token` somente em
+`timer_queue.cpp`; nenhuma implementação de threading foi substituída.
+
+O target real `rexui` compilou isoladamente, incluindo `window_sdl.cpp`,
+`surface_android.cpp`, `vulkan_instance.cpp`, `vulkan_device.cpp`,
+`vulkan_provider.cpp` e `vulkan_presenter.cpp`. O patch opt-in
+`0007-android-presentation-diagnostics.patch` registra, dentro desses caminhos
+reais, a criação do wrapper e o retorno/handle produzidos pela chamada real a
+`vkCreateAndroidSurfaceKHR`; quando a macro do probe não é definida, não há
+símbolos nem comportamento novo.
+
+Para o APK, o probe passou a consumir o top-level e os OBJECT targets reais e a
+empacotar o `libSDL3.so` e as classes Java da mesma revisão vendorizada. O build
+incremental comprovou que `rexcore` não fecha no Android: seu ramo `UNIX`
+seleciona `fiber_posix.cpp`, que depende de `getcontext`, `makecontext` e
+`swapcontext`. O Bionic/NDK 27.2.12479018 não declara essas APIs e a compilação
+falhou nesse translation unit. Além da seleção CMake por `UNIX`, o arquivo é
+ativado porque `platform.h` define `REX_PLATFORM_LINUX=1` também para Android.
+O erro não foi mascarado removendo a fonte nem
+criando stubs. Escolher ou implementar um backend de fibers Android/AArch64
+altera a arquitetura de `rexcore` e exige decisão separada.
+
+**Resultado:** `5B.3 BUILD: FAIL`; nenhum APK novo foi produzido e nenhum
+checkpoint `REXUI_*` foi executado no aparelho. A série 0001–0008 reaplicou sem
+conflitos sobre `f5337cdc947ff6d4c4196737e2c807a48f2a1fc2` e passou em
+`git diff --check`. A falha atual é anterior ao link e à execução do presenter,
+não evidência de falha Vulkan/Android.
+
+O gate de NOTICE foi executado, mas não pôde gerar uma comparação: ele exige
+também os textos de Snappy, Tracy e volk. Essas dependências não pertencem ao
+build 5B.3 selecionado e não foram baixadas apenas para satisfazer o gerador;
+o `NOTICE` existente não foi alterado.
