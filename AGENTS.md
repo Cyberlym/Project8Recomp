@@ -132,3 +132,45 @@ The launcher's player-facing failure copy avoids developer vocabulary: no
 terms of the disc and the game, then say what to do about it. Contributor docs
 may use exact hashes and executable names when those facts are the task. The
 failure copy in `src/launcher/src/launcher_app.cpp` is the reference.
+
+## Android Port Rules
+
+Estas regras adicionais regem o trabalho Android deste fork; as regras originais
+acima permanecem preservadas. Instruções explícitas do usuário sobre escopo e
+autorização prevalecem, inclusive a proibição de builds na etapa de auditoria.
+
+- Temos quota limitada de Codespaces e agente. Não execute builds, clean builds,
+  grandes downloads, clones pesados, codegen ou operações demoradas sem autorização
+  explícita do usuário. Antes de uma operação potencialmente cara, informe
+  exatamente o que pretende executar e espere permissão.
+- Nunca repita um build sem primeiro analisar o erro anterior.
+- Use pesquisa local com `rg`/`git grep` antes de abrir muitos arquivos.
+- Faça alterações pequenas e focadas.
+- Nunca faça `git clean -xfd`, `reset --hard`, force push ou remoções grandes sem
+  autorização. A autorização excepcional para alinhar o `main` inicial ao
+  upstream nesta etapa não autoriza novas reescritas nas próximas etapas.
+- Reutilize build directories e caches. Quando for necessário compilar código
+  C++ grande, use paralelismo conservador, inicialmente `-j2`.
+- Antes de push ou abertura de PR, inspecione os gatilhos de CI: builds remotos
+  automáticos também estão sujeitos à restrição de custo e autorização.
+- Não implemente UI bonita, Compose, Turnip ou otimizações antes do runtime
+  básico Android funcionar.
+- Não baixe, solicite ou faça commit de ISOs, `default.xex`, assets do jogo,
+  generated translation units ou qualquer conteúdo original do Xbox 360.
+  Conteúdo do jogo fornecido pelo usuário deve permanecer local, privado e
+  ignorado pelo Git. Confirme a regra de ignore para o caminho efetivamente usado
+  antes de armazenar conteúdo; nunca use `git add -f` para contorná-la.
+- Ao encontrar um bloqueio, investigue e reporte a causa antes de tentar
+  mudanças aleatórias.
+- Mantenha `origin` em `https://github.com/Cyberlym/Project8Recomp` e `upstream`
+  em `https://github.com/theokyr/Project8Recomp`. O `main` deve permanecer limpo,
+  acompanhando `upstream/main`; todo trabalho Android pertence a `android-port`.
+- Mantenha um diário técnico curto em `docs/android-progress.md` e as conclusões
+  da auditoria em `docs/android-audit.md`.
+- Ao terminar cada etapa, informe arquivos alterados, comandos executados,
+  descobertas, riscos e próximo passo recomendado.
+
+Na Etapa 1, faça somente organização do Git, regras e documentação de auditoria:
+não implemente Android, não configure ou execute builds e não execute codegen.
+Os comandos de compilação em "Before committing" acima não devem ser executados
+sem autorização explícita; registre essa limitação na validação da etapa.
