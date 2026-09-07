@@ -482,3 +482,48 @@ nenhum código foi alterado. O caminho estático
 ou promovido a checkpoint. É necessária uma decisão explícita entre autorizar o
 conjunto amplo de submódulos do build oficial ou autorizar uma mudança focada no
 grafo CMake upstream para tornar `rexui` configurável isoladamente.
+
+### Classificação detalhada do grafo 5B.3
+
+O SDK não possui opção oficial de componentes nem suporta adicionar diretamente
+`src/ui`: esse CMake pressupõe funções, variáveis e targets criados pelo
+top-level e por `thirdparty`. O target `rexui` também não é granular: compila UI
+core, overlays e todas as fontes Vulkan. `VulkanProvider::Create(true/false,
+true)` exige instance, device e `UISamplers`; `CreatePresenter` instancia o
+`VulkanPresenter`, cuja inicialização surface-independent cria recursos Vulkan
+antes de a conexão com `Window` chegar à criação da surface.
+
+**REQUIRED_FOR_5B3 pelo target atual:** SDL3; Vulkan-Headers; Vulkan Memory
+Allocator; ImGui; UTF8-CPP; fmt; spdlog; SIMDe; toml++; xxHash; CLI11; e os
+headers de SPIRV-Tools/SPIRV-Headers. `renderdoc`, `stb` e `disruptorplus` também
+são consumidos, mas já estão presentes como fontes locais, não submódulos.
+
+**CONFIGURATION_ONLY:** `libmspack`, FFmpeg, glslang e o target o1heap são
+configurados pelo top-level/`thirdparty`, mas não pertencem à cadeia de link de
+`rexui` + `rexcore`. O codegen e seus consumidores, incluindo inja, são
+**UNRELATED_TO_5B3**. Tracy é **UNRELATED_TO_5B3** e pode ser desligado pela
+opção oficial; FidelityFX e testes já são opt-in e permanecem desligados. O
+Vulkan Loader e MoltenVK são condicionais Apple e **UNRELATED_TO_5B3** no
+Android.
+
+Uma refatoração pequena apenas na lista `REQUIRED_SUBMODULES` não resolve: o
+top-level ainda adiciona todos os subdiretórios, e os targets OBJECT monolíticos
+fazem `rexcore` compilar inclusive memória, exception/SEH e fontes POSIX que não
+são necessárias para provar a surface. Configurar `src/ui` isoladamente exigiria
+recriar manualmente seus targets transitivos, deixando de usar o grafo oficial.
+Separar provider/presenter de UI e separar o núcleo mínimo de `rexcore` seria
+uma mudança de arquitetura CMake maior que esta etapa autoriza.
+
+Há ainda dois condicionais Android incorretos no build oficial: o top-level
+classifica todo `UNIX AND NOT APPLE` como `REX_PLATFORM_LINUX`, e o CMake
+vendorizado do SDL habilita X11, Wayland e áudio Linux para todo `UNIX AND NOT
+APPLE`. `platform.h` reconhece `__ANDROID__`, mas isso não corrige as decisões
+CMake. Esses pontos exigiriam correções Android específicas mesmo após obter as
+dependências.
+
+**Decisão pendente:** o menor caminho que preserva os targets reais ainda baixa
+ao menos 13 submódulos diretamente usados e carrega os targets monolíticos de
+`rexcore`/`rexui`; o caminho top-level acrescenta dependências apenas de
+configuração. Nenhum download foi iniciado. Prosseguir requer autorização
+explícita para esse conjunto amplo e para compilar o `rexcore` monolítico, ou
+autorização para uma refatoração arquitetural de granularidade dos targets.
