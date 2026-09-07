@@ -74,3 +74,39 @@ localmente nesta etapa. Nenhum teste Android foi realizado.
 **Próximo passo:** inspeção estática limitada do SDK fixado para fechar P0, antes
 de autorizar implementação ou compilação. Verificar gatilhos de CI antes de novos
 pushes/PRs; não publicar `android-port` nem abrir PR automaticamente nesta etapa.
+
+## 2026-09-07 — Etapa 2: aprofundamento arquitetural
+
+**Escopo executado:** leitura estática dirigida dos P0 da Etapa 1. Foram lidos
+arquivos pontuais do SDK v0.10.0 no GitHub, no commit
+`f5337cdc947ff6d4c4196737e2c807a48f2a1fc2`, sem clone/submódulos. A árvore remota
+indicava cerca de 164 MB/1.301 blobs, por isso não foi baixada. Um `git ls-remote`
+direto falhou por DNS do sandbox; a leitura prosseguiu pelo conector GitHub já
+disponível, limitada a texto. Também foram consultadas páginas oficiais SDL3,
+Android/NDK e upstream RmlUi.
+
+**Comandos locais:** `git status`, `rg`, `find`, `sed`, `cat` e `tail`, somente
+para inventário e leitura. Não houve configuração CMake, build, teste compilado,
+codegen, aplicação de patch, execução do jogo, download grande ou push.
+
+**Arquivos alterados:** apenas `docs/android-audit.md` e este diário.
+
+**Descobertas:** o SDK tem Vulkan Android no presenter e caminhos POSIX/ARM64
+parciais, mas falta a classe de surface Android, entrypoint de biblioteca e as
+implementações das pontes Android; o CMake ainda força X11/Wayland. O runtime
+Android não depende de `/dev/shm`: em API 26+ ele pretende usar
+`ASharedMemory_create`; `/dev/shm` pertence ao supervisor desktop. Memória fixa,
+aliases e recuperação de faults ARM64 continuam como bloqueador que só um probe
+em aparelho poderá fechar. SDLActivity é o melhor encaixe com a arquitetura SDL
+existente. O layout público de codegen foi determinado e a divergência
+`src/config` versus `config` confirmada.
+
+**Riscos:** Android também define `__linux__`, ativando hoje supervisor,
+`prctl`/signals e hooks que não foram validados em ELF/AArch64. `ucontext_t`, W^X,
+endereços virtuais fixos e páginas de 16 KiB precisam de validação futura.
+Arquivos privados gerados continuam ausentes e devem permanecer ignorados.
+
+**Próximo passo recomendado:** na Etapa 3, primeiro corrigir apenas o caminho
+CMake do helper gerado e os ignores correspondentes. Depois separar Android de
+GNU Linux no CMake do SDK, antes de implementar SDLActivity/surface. Qualquer
+compilação continua sujeita à autorização explícita e começa com `-j2`.

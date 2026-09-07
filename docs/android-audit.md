@@ -384,3 +384,323 @@ gatilhos Actions antes de qualquer push/PR futuro sob restrição de custo.
 
 Consulta final: a execução terminou com `conclusion=success` nos três sistemas.
 Esse resultado não foi usado como validação do port ou dos documentos Android.
+
+## 11. Etapa 2 — rastreamento arquitetural dirigido
+
+Esta seção fecha os pontos P0 que podiam ser resolvidos sem compilar. Além da
+árvore local, foram lidos arquivos pontuais do `rexglue-sdk` **v0.10.0** no commit
+`f5337cdc947ff6d4c4196737e2c807a48f2a1fc2`, que é a base declarada dos patches.
+O repositório do SDK não foi clonado: sua árvore recursiva tem 1.301 blobs e cerca
+de 164 MB, em grande parte ferramentas binárias. A leitura remota foi limitada a
+fontes de plataforma, memória, exceção, UI, Vulkan, runtime e codegen.
+
+As classificações desta etapa são: **reutilizável sem alteração**, **pequena
+adaptação**, **implementação Android necessária**, **depende de arquivos do
+jogo/codegen** e **bloqueador desconhecido**.
+
+### 11.1 Caminho completo: launcher até uma função recompilada
+
+```text
+Project8Recomp main
+  -> ExecReplace(thps_p8_gui --play)
+  -> SDL_Init(VIDEO | GAMEPAD), SDL_CreateWindow, loop SDL_PollEvent
+  -> LauncherApp::StartGame
+  -> Run(thps_p8_launch --game_data_root=... --gpu_plugin=xenos ...)
+  -> supervisor: preflight -> fork -> execv(thps_p8) -> waitpid
+  -> main.cpp: REX_DEFINE_APP(thps_p8, ThpsP8App::Create)
+  -> RunWindowedApp -> SDLWindowedAppContext::Initialize -> ReXApp::OnInitialize
+  -> SetupPresentation -> LoadGpuPlugin("xenos") -> GraphicsSystem::SetupPresentation
+  -> Window::Create/Open -> SDL_CreateWindow -> ui::Surface -> VulkanPresenter
+  -> ConstructRuntime -> Runtime::Setup(PPCImageConfig) -> LoadXexImage("game:/default.xex")
+  -> LaunchModule -> KernelState::PrepareModuleLaunch -> XThread::Resume
+  -> FunctionDispatcher consulta PPCImageConfig.func_mappings
+  -> ponte gerada chama thps_p8_recomp.N.cpp para o endereço guest
+```
+
+O primeiro executável público, em `src/launcher/src/entry.cpp`, só interpreta
+`--gui/--play` e substitui o próprio processo pela GUI. A GUI inicializa SDL3 em
+`src/launcher/src/main.cpp` com `SDL_INIT_VIDEO | SDL_INIT_GAMEPAD`, cria a janela
+e o `SDL_Renderer` usados por RmlUi, e entrega teclado, mouse, gamepad, hotplug e
+quit a `LauncherApp` no loop `SDL_PollEvent`. Ao jogar, a GUI encerra RmlUi/SDL e
+executa `thps_p8_launch` com argumentos construídos por `RenderArgv`.
+
+Launcher, worker e supervisor não têm RPC. Eles trocam **argv, stdout, exit code
+e arquivos**: `thps_p8_identify` escreve JSON final e linhas `PROGRESS`; a GUI
+passa paths/flags e mantém `config/install.toml`, `config/settings.toml` e
+`logs/last_launch.json`; o supervisor repassa argv ao jogo e escreve o breadcrumb
+final. O supervisor bifurca, chama `execv`, espera com `waitpid` e encaminha
+`SIGINT`, `SIGTERM` e `SIGHUP`. O runtime do jogo não conversa de volta com a GUI
+em execução.
+
+No SDK, a segunda inicialização SDL está em
+`src/ui/windowed_app_context_sdl.cpp`: `SDL_InitSubSystem(SDL_INIT_VIDEO)`, dois
+eventos privados, `SDL_AddEventWatch` e um loop bloqueante `SDL_WaitEvent`. Esse
+loop encaminha eventos de janela, teclado, texto, mouse, drop e quit; o input do
+guest é criado separadamente por `CreateDefaultInputSystem`. `WindowSDL::OpenImpl`
+em `src/ui/window_sdl.cpp` faz `SDL_CreateWindow`, registra o ID, configura texto,
+cursor, fullscreen e mostra a janela. **Classificação: pequena adaptação**: SDL3
+já fornece o backend Android, mas o bootstrap e lifecycle precisam ser ligados.
+
+`ReXApp::SetupPresentation` carrega o backend pelo nome de cvar (`xenos`) através
+de `rex::system::LoadGpuPlugin`, chama `GraphicsSystem::SetupPresentation`, cria a
+janela e conecta o `Presenter`. `Runtime::Setup(PPCImageConfig)` reserva memória,
+instala dispatcher/VFS/kernel/input/áudio/GPU, registra cada par guest/host de
+`PPCImageConfig.func_mappings` e carrega o XEX pelo VFS. `LaunchModule` prepara a
+thread guest, inicializa o cache de shaders, chama os hooks do projeto e faz
+`Resume`; o dispatcher chega às funções C++ emitidas. **Classificação: depende de
+arquivos do jogo/codegen**, pois `PPCImageConfig`, mappings e corpos não existem
+no repositório público.
+
+### 11.2 Vulkan, surface e backend ReXGlue
+
+O plugin `rexgpu-xenos` implementa a interface gráfica injetada no runtime;
+consumidores não o ligam diretamente no desktop. `VulkanGraphicsSystem` cria
+`VulkanProvider`, `VulkanInstance`, dispositivo e `VulkanCommandProcessor`. O
+header Vulkan do SDK define `VK_USE_PLATFORM_ANDROID_KHR` quando
+`REX_PLATFORM_ANDROID`; a instância habilita `VK_KHR_android_surface`; e
+`VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread` já possui o
+caso que preenche `VkAndroidSurfaceCreateInfoKHR.window` e chama
+`vkCreateAndroidSurfaceKHR`.
+
+Falta a metade que produz esse `ANativeWindow*`. `WindowSDL::CreateSurfaceImpl`
+só possui Win32, `CAMetalLayer`, Wayland e XCB. O presenter inclui
+`rex/ui/surface_android.h`, mas esse arquivo e sua implementação não existem na
+árvore v0.10.0. O CMake escolhe `surface_gnulinux.cpp` para todo UNIX não Apple e
+exige pkg-config/X11-XCB/Wayland, inclusive quando o toolchain define Android.
+
+A VkSurface Android deve nascer na fronteira `WindowSDL::CreateSurfaceImpl` (ou
+num `Window` Android equivalente), obtendo o `ANativeWindow` associado à janela
+SDL, conservando uma referência enquanto a surface for válida, e retornando um
+`AndroidNativeWindowSurface`. A conexão Vulkan existente pode então permanecer.
+Perda/recriação da surface deve desconectar swapchain/VkSurface e reconectar só
+quando houver nova janela válida; pause/resume não pode destruir o runtime guest
+como efeito colateral automático. **Classificação: implementação Android
+necessária** para wrapper, CMake e lifecycle; **reutilizável sem alteração** para
+instance/device/presenter e a maior parte do backend Vulkan/Xenos.
+
+O carregamento por `dlopen` é possível em Bionic, mas procurar uma `.so` vizinha
+ao executável e controlar `LD_LIBRARY_PATH` não é um contrato APK. A primeira
+versão deve ligar ou resolver o backend dentro do conjunto de bibliotecas nativas
+empacotadas, mantendo uma só cópia de `c++_shared` e dos singletons do runtime.
+**Classificação: pequena adaptação**; o nome/empacotamento final depende do grafo
+CMake Android.
+
+### 11.3 Processos, `/proc` e `/dev/shm`
+
+| Dependência desktop | Uso exato | Alternativa Android | Classe |
+| --- | --- | --- | --- |
+| `fork/execv/waitpid/kill` | supervisor lança e observa `thps_p8`; worker isola parser | um único processo/Activity para o jogo; se o parser precisar isolamento, `Service` em `android:process` com Binder/pipe/`ParcelFileDescriptor` | implementação Android necessária |
+| `/proc/<pid>/comm`, `/proc/<pid>/stat` | encontra processos homônimos e distingue zombie | estado da própria Activity/processo; serviço Android para processo conhecido, sem varredura global | implementação Android necessária |
+| `/proc/self/exe` | acha binários irmãos | dirs do app/paths SDL/JNI e biblioteca nativa declarada no APK | implementação Android necessária |
+| `/dev/shm` + `shm_unlink` | encontra segmentos órfãos do runtime desktop | não executar essa limpeza; o caminho Android do SDK usa FD anônimo e o kernel o libera ao morrer o processo | reutilizável sem alteração no runtime; remover do fluxo Android |
+| sinais de término | supervisor encaminha; app Linux instala handlers/`prctl` | callbacks Activity/SDL (`PAUSED`, `RESUMED`, `LOW_MEMORY`, `QUIT`) e gravação normal; não usar signal handler como lifecycle | implementação Android necessária |
+
+`platform.h` do supervisor testa `__linux__` antes de qualquer Android; como o
+NDK também define `__linux__`, ele selecionaria o código Linux inadequado. Isso
+deve ser impedido no CMake e no preprocessor, não remendado com permissões para
+ler processos. O Android inicial deve pular o supervisor e entrar diretamente no
+runtime. **Classificação do supervisor: implementação Android necessária**.
+
+### 11.4 Memória virtual, exceções e ARM64 em Bionic
+
+O SDK tem suporte POSIX comum para `mmap`, `munmap`, `mprotect`, `madvise`, FDs e
+`sigaction`. Em Android, `platform.h` define simultaneamente
+`REX_PLATFORM_ANDROID` e `REX_PLATFORM_LINUX`; a arquitetura `__aarch64__` define
+`REX_ARCH_ARM64`. O backend usa o tamanho real retornado por `getpagesize`, e a
+consulta de proteção lê `/proc/self/maps`. Ler os próprios mapas é uma hipótese
+razoável no Android atual, mas não deve ser a única fonte de verdade se políticas
+futuras mudarem. **Classificação: pequena adaptação**.
+
+Para backing compartilhado, `memory_posix.cpp` já tenta carregar
+`ASharedMemory_create` de `libandroid` em API 26 ou superior. Abaixo disso cai em
+`/dev/ashmem`; o próprio comentário diz que esse fallback ficou inviável para
+targets modernos. Android fecha o FD sem `shm_unlink`, portanto `/dev/shm` não é
+dependência do runtime Android. Fixar `minSdk >= 26` é a direção de menor risco,
+mas depende ainda dos demais requisitos. `GetAndroidApiLevel` é chamado pela
+memória e threading e não tem definição encontrada na árvore. O caminho de URI
+chama `OpenAndroidContentFileDescriptor`, também apenas declarado. **Classificação:
+implementação Android necessária** para essas pontes; a alocação/mapeamento por
+FD é **pequena adaptação**.
+
+`Memory::Initialize` preserva o mapa virtual guest e seus aliases. Reservas usam
+`MAP_FIXED_NOREPLACE` quando disponível, commit/proteção usa `mmap/mprotect`, e
+write-watch/MMIO recuperam de faults. Essas APIs existem em Bionic. Os riscos
+abertos são a disponibilidade dos endereços fixos no processo Android de 64 bits,
+W^X/SELinux, e páginas de 16 KiB. O SDK retorna `true` para memória gravável e
+executável em todo não-macOS; isso precisa ser confrontado com os call sites e a
+política real do aparelho. Constantes de página guest não devem ser trocadas por
+16 KiB; somente granularidade/alinhamento enviados ao kernel seguem o host.
+**Classificação: bloqueador desconhecido** até um probe pequeno autorizado em
+aparelho, pois leitura estática não prova que todos os aliases podem ser criados.
+
+O handler POSIX instala `SIGILL` e `SIGSEGV` (`SIGBUS` adicional no macOS), recebe
+`ucontext_t`, extrai `regs`, `pc`, `pstate` e o bloco FPSIMD de `__reserved` no
+ramo ARM64, decodifica loads/stores AArch64 e decide MMIO/write-watch antes de
+retomar. A ideia é compatível com Bionic e demonstra que a ISA host ARM64 foi
+considerada. Os tipos de contexto expostos pelos headers NDK, a cadeia com
+handlers do Android/SDL, async-signal-safety e faults de alinhamento ainda exigem
+adaptação/validação. O ramo não instala `SIGBUS` no Android, apesar de faults ARM64
+possíveis. **Classificação: pequena adaptação**, com **bloqueador desconhecido**
+na recuperação real de faults.
+
+O macOS M1 comprova que dispatch C++, endian, caminhos escalares, threads guest e
+backend gráfico conseguem operar num host ARM64. Também valida o decodificador
+AArch64 em alguma configuração. Não comprova ABI Bionic, `ucontext_t` Linux,
+`mmap` fixo, Android Vulkan, lifecycle ou os hooks que o projeto desativa com
+`#if !defined(__APPLE__)`.
+
+### 11.5 Filesystem, dados privados, saves, logs e configuração
+
+No desktop, `SelfDir` ancora a instalação portátil: `game/`, `saves/`, `config/`
+e `logs/`. A GUI lê `config/settings.toml`, grava `config/install.toml` após uma
+extração completa e lê/grava `logs/last_launch.json`. `RenderArgv` passa
+`--game_data_root`, `--storage_root`, flags de input/GPU e logs. No runtime,
+`SetupVfs` monta o root host como `\\Device\\Harddisk0\\Partition1`, cria os links
+`game:` e `d:`, e opcionalmente `update:`. Saves e shader cache usam roots
+configurados pelo `ReXApp`/runtime.
+
+No Android, configurações, saves, caches e logs devem usar diretórios internos
+graváveis do app; assets empacotados são somente leitura. `SDL_GetBasePath()` em
+SDL3 recente pode retornar `assets://`, que `std::filesystem`, `ifstream` e
+`fopen` não entendem. Uma XISO escolhida por SAF chega como `content://`; a ponte
+já prevista no SDK abre um FD, mas ainda não está implementada. Para o runtime,
+a opção mais simples e confiável é extrair apenas após validação para storage
+privado e depois usar paths normais; não manter o XEX dentro do APK nem publicar
+seu path. **Classificação: pequena adaptação** para VFS/path normal privado;
+**implementação Android necessária** para SAF/URI e seleção de diretórios.
+
+### 11.6 XISO/XDVDFS, `default.xex` e codegen
+
+`thps_p8_identify` abre o path fornecido com `MappedMemory::Open`, monta
+`DiscImageDevice` e resolve `default.xex` no XDVDFS. Calcula SHA-256 e tamanho e
+compara a tabela pública; só uma correspondência exata habilita a extração. A
+travessia recusa componentes inseguros e copia em blocos de até 4 MiB. POSIX usa
+`fork` para conter crashes do parser em imagem truncada; Android precisa manter
+essa fronteira com um processo de serviço ou endurecer o parser antes de trazê-lo
+ao processo do jogo. O parser/hashing são **reutilizáveis sem alteração**; URI,
+isolamento e destino são **implementação Android necessária**.
+
+O manifesto aponta `entrypoint.file_path` para o `default.xex` privado e
+`out_directory_path = "../generated/default"`, ambos relativos a `config/`.
+Durante `rexglue codegen`, `ProjectRecompiler` canoniza o XEX, cria um Runtime em
+`tool_mode`, monta o game root, chama `LoadXexImage`, analisa o módulo e escreve
+as pontes. Esse é o único momento em que o XEX alimenta a tradução; em execução,
+o runtime ainda o abre para metadados/imagem/VFS e o gate local o revalida.
+
+Arquivos ausentes necessários **antes de configurar/compilar o target do jogo**:
+
+- `config/generated/rexglue.cmake`, helper emitido ao iniciar codegen;
+- `generated/default/thps_p8_pch.h`, `thps_p8_funcs.h`, `thps_p8_init.h`,
+  `thps_p8_init.cpp` e `thps_p8_register.cpp`;
+- pares particionados `thps_p8_funcs.N.h` e `thps_p8_recomp.N.cpp`;
+- `generated/default/sources.cmake`, `partition.json`, `codegen.stamp`,
+  `codegen.build.stamp` e `codegen.d`.
+
+Com DLLs, há ainda registry/targets equivalentes por módulo. O número de unidades
+`N` depende da análise/tamanho e não pode ser conhecido pela árvore pública.
+Nenhum desses arquivos deve ser commitado. A inconsistência atual é concreta:
+`src/game/CMakeLists.txt` inclui `../config/generated/rexglue.cmake`, que resolve
+para `src/config/...`, enquanto o SDK escreve junto ao manifesto em
+`config/generated/...`; `src/game/src/main.cpp` espera que o include root exponha
+`generated/default`. **Classificação: depende de arquivos do jogo/codegen** e
+**pequena adaptação** para corrigir uma única raiz e os ignores antes de gerar.
+
+### 11.7 Condicionais de plataforma e arquitetura relevantes
+
+| Condicional | Efeito relevante ao port | Decisão |
+| --- | --- | --- |
+| SDK `__ANDROID__` | define Android **e** Linux | manter compatibilidade POSIX, mas separar GNU Linux onde houver desktop APIs |
+| SDK `__gnu_linux__` | define GNU Linux | X11/Wayland devem depender deste macro, não do Linux genérico |
+| SDK `__aarch64__` / `_M_ARM64` | seleciona ARM64, contexto e decoder | reutilizar; validar headers NDK e faults |
+| SDK `REX_PLATFORM_MAC` | `CAMetalLayer`, Mach, sem memória RWX | prova ARM64 parcial; não reutilizar APIs Apple |
+| SDK `REX_PLATFORM_WIN32` | HWND/SEH/CreateProcess | sem papel Android |
+| UI CMake `UNIX AND NOT APPLE` | força X11/XCB/Wayland | criar branch Android anterior ao GNU Linux |
+| projeto `__linux__` | supervisor Linux e `ThpsP8App` instala signals/`prctl` | excluir Android explicitamente ou usar macro SDK |
+| projeto `!defined(__APPLE__)` | habilita raw hooks em Linux/Windows e, hoje, Android | não assumir que aliases ELF/AArch64 funcionam; validar hook por hook |
+| projeto `__x86_64__`/`_M_X64` | SIMD x86 nos unpackers | caminho escalar já cobre ARM64 |
+| `_WIN32` | processo worker, compat math, flushing | caminhos POSIX atualmente capturam Android por exclusão; revisar chamadas não-Bionic |
+
+O uso de `-Wall -Wextra` no SDK ocorre depois de terceiros; o patch troca `/W4`
+apenas em MSVC. Clang/NDK aceita os flags GNU globais mais prováveis, mas o CMake
+identifica o alvo como `linux-arm64`, busca pacotes desktop e há includes Linux
+aninhados por macros amplos. Warnings de conversão de handles/JNI, formatos
+`size_t/off_t`, `mmap64/ftruncate64`, casts de `ucontext` e APIs obsoletas devem
+ser corrigidos no patch Android, não silenciados globalmente. **Classificação:
+pequena adaptação**, sem afirmar erro de compilação ainda.
+
+### 11.8 Dependências e suporte Android
+
+| Dependência | Situação observável | Classe |
+| --- | --- | --- |
+| SDL3 | documentação oficial fornece `SDLActivity`, CMake/AAR, eventos de lifecycle e `.so` `main` | reutilizável sem alteração + pequena adaptação de bootstrap |
+| Vulkan loader | parte da plataforma Android; surface KHR já usada pelo SDK | reutilizável sem alteração no núcleo |
+| RmlUi | upstream declara Android e backend SDL2/SDL3 com touch; launcher usa SDL renderer | pequena adaptação, fora do runtime inicial |
+| SDL3_image, FreeType | bibliotecas portáveis usadas só pela GUI; precisam integrar o mesmo build/ABI NDK | pequena adaptação, sem prioridade inicial |
+| VMA, fmt, spdlog, nlohmann, xxHash, zlib, libmspack, SIMDe | código multiplataforma; não há bloqueio Android específico achado na integração atual | reutilizável sem alteração, sujeito ao build fixado |
+| FFmpeg fork | há configuração `android_aarch64` documentada no projeto | pequena adaptação; backend e licença do pacote ainda precisam ser validados |
+| ReXGlue | scaffolding Android parcial, mas CMake declara apenas Windows/Linux/macOS e faltam pontes | implementação Android necessária |
+| MoltenVK | prova o caminho Vulkan no macOS ARM64 | não necessário no Android |
+
+“Suporta Android” aqui significa que o upstream da dependência oferece caminho
+de integração, não que esta combinação de commits já foi compilada. Referências:
+[SDL3 Android](https://wiki.libsdl.org/SDL3/README-android),
+[Vulkan no NDK](https://developer.android.com/ndk/guides/graphics/getting-started),
+[RmlUi](https://github.com/mikke89/RmlUi) e
+[páginas de 16 KiB](https://developer.android.com/guide/practices/page-sizes).
+
+### 11.9 Escolha da entrada Android
+
+| Opção | Encaixe | Custo principal |
+| --- | --- | --- |
+| **SDLActivity** | preserva SDL3, `SDL_Window`, fila de eventos e input existentes; upstream SDL fornece glue Java/JNI | adaptar `RunWindowedApp` para biblioteca, escolher o creator registrado e ligar surface/lifecycle |
+| GameActivity | opção recomendada pelo Android para engines C/C++ e ótimo acesso a lifecycle/input/native window | cria um segundo event loop/native-app-glue e exigiria substituir ou encaixar o bootstrap SDL existente |
+| NativeActivity | acesso direto a `ANativeWindow` com pouco Java | integração mais antiga e de baixo nível; duplica trabalho que SDL já resolve |
+| Activity própria + JNI | controle total de SAF, erros e lifecycle | maior superfície de código antes de provar o runtime |
+
+Recomendação: **SDLActivity**, com uma subclasse mínima apenas para paths/SAF e
+sem launcher visual na primeira prova. A documentação SDL manda transformar o
+executável com `main` numa biblioteca compartilhada e entrega quit/lifecycle como
+eventos. Isso coincide com `XE_UI_WINDOWED_APPS_IN_LIBRARY`, que o SDK já ativa em
+Android: `REX_DEFINE_APP` registra creators por nome. A lacuna é que
+`windowed_app_main_sdl.cpp` ainda chama o creator desktop e não fornece um
+entrypoint Android que consulte `WindowedApp::GetCreator("thps_p8")`.
+GameActivity seria a segunda escolha caso limitações concretas de SDLActivity
+apareçam; hoje traria duas abstrações de janela/input sem evidência de benefício.
+[GameActivity](https://developer.android.com/games/agdk/game-activity/get-started).
+
+### 11.10 Estratégia de patches e plano de implementação
+
+Manter v0.10.0 imutável como base e acrescentar patches pequenos após `0001` e
+`0002` no arquivo `series`. Não incorporar Android ao grande `0001`. Separação
+sugerida: plataforma/CMake; entry/surface/lifecycle; filesystem/JNI/URI; memória e
+exceções. Ao atualizar SDK, aplicar a série em ordem com `git apply --check`,
+rebasear um patch por vez e registrar conflitos. Isso mantém a diferença Android
+revisável e evita confundir correções do projeto com mudanças upstream.
+
+Ordem de menor risco para maior risco:
+
+1. Corrigir documentalmente e depois em código a raiz única de
+   `config/generated` e ampliar ignores/gate para toda saída privada.
+2. Criar detecção CMake Android/ARM64 que não entra em X11/Wayland, ainda sem
+   depender de game/codegen; fixar NDK/API após inventário de dependências.
+3. Adicionar entry de biblioteca para SDLActivity usando o creator já registrado,
+   com diretórios privados e logs básicos.
+4. Implementar `AndroidNativeWindowSurface` e ligar criação/destruição/recriação
+   ao presenter Vulkan existente.
+5. Implementar as pontes pequenas (`GetAndroidApiLevel`, paths/JNI e Content FD),
+   mantendo SAF fora do runtime até o boot básico.
+6. Provar, com harness autorizado, reserva/aliases, páginas 4/16 KiB, proteção e
+   handler ARM64/Bionic; corrigir W^X/contexto/sinais conforme evidência.
+7. Integrar runtime e backend Xenos, inicialmente sem launcher/worker; só então
+   usar codegen privado local para testar chegada à thread guest.
+8. Adaptar lifecycle completo, áudio/input, saves e cache; depois restaurar a
+   importação XISO com isolamento seguro.
+9. Empacotar e, por último, considerar launcher Android, UI, otimizações ou novos
+   drivers. Turnip permanece fora deste plano inicial.
+
+**Primeira mudança de código da Etapa 3:** corrigir o contrato de caminhos
+gerados sem executar codegen: fazer `src/game/CMakeLists.txt` incluir o helper em
+`config/generated/rexglue.cmake` a partir da raiz real do repositório e acrescentar
+regras de ignore explícitas para esse helper e toda a árvore `generated/`. É uma
+mudança pequena, verificável estaticamente e remove o primeiro bloqueio de
+configuração antes de tocar em NDK, Activity ou memória.
