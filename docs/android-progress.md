@@ -726,3 +726,19 @@ probe apenas constrói e destrói o objeto `Runtime`; `Runtime::Setup()` fica
 explicitamente `NOT TESTED` até uma decisão específica sobre memória e fault
 handling. O relatório separa os links de `rexcore`/`rexruntime` como `BUILD
 VERIFIED` dos resultados que ainda exigem execução no aparelho.
+
+Para a 5B.4, o patch opt-in
+`0014-android-lifecycle-diagnostics.patch` observa sem alterar ownership: o
+destrutor real de `AndroidNativeWindowSurface` e a chamada real a
+`vkDestroySurfaceKHR` em `VulkanPresenter` emitem eventos depois da operação
+correspondente. O probe também registra via `SDL_AddEventWatch` os eventos
+`WILL/DID_ENTER_BACKGROUND` e `WILL/DID_ENTER_FOREGROUND`, que a própria API
+SDL exige processar por event watch. O relatório mantém contadores de
+criação/destruição do wrapper e da surface Vulkan. Nenhuma desconexão ou
+recriação foi forçada pelo probe; a sequência real continua `DEVICE TEST
+REQUIRED` no Moto G34.
+
+O empacotamento consolidado inclui `librexruntime.so` como dependência nativa
+de `libmain.so`, além do `libSDL3.so` já usado pela Activity. O ELF de
+`libmain.so` declara `DT_NEEDED` para `librexruntime.so`; o runtime, por sua
+vez, fecha com `--no-undefined` e não depende de X11, XCB ou Wayland.

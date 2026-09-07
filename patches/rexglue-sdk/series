@@ -11,3 +11,4 @@
 0011-android-non-robust-mutex.patch
 0012-android-content-file-descriptor.patch
 0013-android-presentation-diagnostic-callback.patch
+0014-android-lifecycle-diagnostics.patch

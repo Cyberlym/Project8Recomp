@@ -49,6 +49,14 @@ bool g_fiber_test_attempted = false;
 AndroidPreflightResult g_preflight_result;
 bool g_preflight_attempted = false;
 bool g_runtime_object_constructed = false;
+uint32_t g_will_background_count = 0;
+uint32_t g_did_background_count = 0;
+uint32_t g_will_foreground_count = 0;
+uint32_t g_did_foreground_count = 0;
+uint32_t g_surface_create_count = 0;
+uint32_t g_surface_destroy_count = 0;
+uint32_t g_vk_surface_create_count = 0;
+uint32_t g_vk_surface_destroy_count = 0;
 
 const char* Status(bool attempted, bool value) {
   return !attempted ? "NOT TESTED" : value ? "OK" : "FAILED";
@@ -154,6 +162,23 @@ void RefreshReportLocked() {
                 g_preflight_result.failure_operation + " errno=" +
                 std::to_string(g_preflight_result.failure_errno) + "\n";
   }
+  g_report += "\nLIFECYCLE_SDL_WILL_BACKGROUND: " +
+              std::to_string(g_will_background_count);
+  g_report += "\nLIFECYCLE_SDL_DID_BACKGROUND: " +
+              std::to_string(g_did_background_count);
+  g_report += "\nLIFECYCLE_SDL_WILL_FOREGROUND: " +
+              std::to_string(g_will_foreground_count);
+  g_report += "\nLIFECYCLE_SDL_DID_FOREGROUND: " +
+              std::to_string(g_did_foreground_count);
+  g_report += "\nLIFECYCLE_REXUI_SURFACE_CREATE_COUNT: " +
+              std::to_string(g_surface_create_count);
+  g_report += "\nLIFECYCLE_REXUI_SURFACE_DESTROY_COUNT: " +
+              std::to_string(g_surface_destroy_count);
+  g_report += "\nLIFECYCLE_VK_SURFACE_CREATE_COUNT: " +
+              std::to_string(g_vk_surface_create_count);
+  g_report += "\nLIFECYCLE_VK_SURFACE_DESTROY_COUNT: " +
+              std::to_string(g_vk_surface_destroy_count);
+  g_report += "\nLIFECYCLE_5B4: DEVICE TEST REQUIRED\n";
   if (!g_error.empty()) {
     g_report += "\nERROR: " + g_error + "\n";
   }
@@ -205,6 +230,28 @@ void CloseLog() {
     std::fclose(g_log);
     g_log = nullptr;
   }
+}
+
+bool SDLCALL LifecycleEventWatch(void*, SDL_Event* event) {
+  std::lock_guard<std::mutex> lock(g_state_mutex);
+  switch (event->type) {
+    case SDL_EVENT_WILL_ENTER_BACKGROUND:
+      ++g_will_background_count;
+      break;
+    case SDL_EVENT_DID_ENTER_BACKGROUND:
+      ++g_did_background_count;
+      break;
+    case SDL_EVENT_WILL_ENTER_FOREGROUND:
+      ++g_will_foreground_count;
+      break;
+    case SDL_EVENT_DID_ENTER_FOREGROUND:
+      ++g_did_foreground_count;
+      break;
+    default:
+      return true;
+  }
+  RefreshReportLocked();
+  return true;
 }
 
 int RunProbe() {
@@ -301,7 +348,12 @@ int RunProbe() {
     }
   }
 
+  const bool lifecycle_watch_added =
+      SDL_AddEventWatch(LifecycleEventWatch, nullptr);
   const int loop_result = app_context.RunMainMessageLoop();
+  if (lifecycle_watch_added) {
+    SDL_RemoveEventWatch(LifecycleEventWatch, nullptr);
+  }
   window->SetPresenter(nullptr);
   window.reset();
   presenter.reset();
@@ -324,6 +376,7 @@ extern "C" void rexglue_android_presentation_diagnostic(
         g_native_window_valid = handle != 0;
         g_surface_width = width;
         g_surface_height = height;
+        ++g_surface_create_count;
         break;
       case rex::ui::AndroidPresentationDiagnosticEvent::kVulkanPresenterEnter:
         g_presenter_entered = true;
@@ -332,6 +385,16 @@ extern "C" void rexglue_android_presentation_diagnostic(
         g_surface_call_completed = true;
         g_surface_result = result;
         g_surface_handle = handle;
+        ++g_vk_surface_create_count;
+        break;
+      case rex::ui::AndroidPresentationDiagnosticEvent::kSurfaceDestroyed:
+        g_surface_created = false;
+        g_native_window_valid = false;
+        ++g_surface_destroy_count;
+        break;
+      case rex::ui::AndroidPresentationDiagnosticEvent::kVulkanSurfaceDestroyed:
+        g_surface_handle = 0;
+        ++g_vk_surface_destroy_count;
         break;
     }
     RefreshReportLocked();
@@ -349,6 +412,14 @@ extern "C" void rexglue_android_presentation_diagnostic(
     case rex::ui::AndroidPresentationDiagnosticEvent::kVulkanSurfaceCreated:
       LogLine("REXUI_VK_CREATE_ANDROID_SURFACE: VkResult=%d", result);
       LogLine("REXUI_VK_SURFACE_VALID: %s handle=%p", Boolean(handle != 0),
+              reinterpret_cast<void*>(handle));
+      break;
+    case rex::ui::AndroidPresentationDiagnosticEvent::kSurfaceDestroyed:
+      LogLine("REXUI_SURFACE_DESTROY: handle=%p",
+              reinterpret_cast<void*>(handle));
+      break;
+    case rex::ui::AndroidPresentationDiagnosticEvent::kVulkanSurfaceDestroyed:
+      LogLine("REXUI_VK_SURFACE_DESTROY: handle=%p",
               reinterpret_cast<void*>(handle));
       break;
   }

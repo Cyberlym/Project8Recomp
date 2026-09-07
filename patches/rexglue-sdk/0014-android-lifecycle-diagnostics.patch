@@ -1,0 +1,68 @@
+diff --git a/include/rex/ui/surface_android.h b/include/rex/ui/surface_android.h
+index ed40146..97af61d 100644
+--- a/include/rex/ui/surface_android.h
++++ b/include/rex/ui/surface_android.h
+@@ -12,6 +12,7 @@ class AndroidNativeWindowSurface final : public Surface {
+  public:
+   static std::unique_ptr<AndroidNativeWindowSurface> Create(
+       SDL_Window* sdl_window);
++  ~AndroidNativeWindowSurface() override;
+ 
+   TypeIndex GetType() const override { return kTypeIndex_AndroidNativeWindow; }
+   ANativeWindow* window() const { return native_window_; }
+diff --git a/src/ui/android_presentation_diagnostics.h b/src/ui/android_presentation_diagnostics.h
+index c5b8c39..ca4359b 100644
+--- a/src/ui/android_presentation_diagnostics.h
++++ b/src/ui/android_presentation_diagnostics.h
+@@ -10,6 +10,8 @@ enum class AndroidPresentationDiagnosticEvent : uint32_t {
+   kSurfaceCreated = 1,
+   kVulkanPresenterEnter = 2,
+   kVulkanSurfaceCreated = 3,
++  kSurfaceDestroyed = 4,
++  kVulkanSurfaceDestroyed = 5,
+ };
+ 
+ using AndroidPresentationDiagnosticCallback = void (*)(
+diff --git a/src/ui/surface_android.cpp b/src/ui/surface_android.cpp
+index 04daff9..1b4c359 100644
+--- a/src/ui/surface_android.cpp
++++ b/src/ui/surface_android.cpp
+@@ -2,8 +2,18 @@
+ 
+ #include <rex/ui/surface_android.h>
+ 
++#include "ui/android_presentation_diagnostics.h"
++
+ namespace rex::ui {
+ 
++AndroidNativeWindowSurface::~AndroidNativeWindowSurface() {
++#if defined(REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS)
++  AndroidPresentationDiagnostic(
++      AndroidPresentationDiagnosticEvent::kSurfaceDestroyed, 0,
++      reinterpret_cast<uintptr_t>(native_window_), 0, 0);
++#endif
++}
++
+ std::unique_ptr<AndroidNativeWindowSurface>
+ AndroidNativeWindowSurface::Create(SDL_Window* sdl_window) {
+   if (!sdl_window) {
+diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
+index afb10e7..8a87be2 100644
+--- a/src/ui/vulkan/vulkan_presenter.cpp
++++ b/src/ui/vulkan/vulkan_presenter.cpp
+@@ -1468,9 +1468,15 @@ void VulkanPresenter::PaintContext::DestroySwapchainAndVulkanSurface() {
+   present_queue_family = UINT32_MAX;
+   if (vulkan_surface != VK_NULL_HANDLE) {
+     const VulkanInstance* vulkan_instance = vulkan_device->vulkan_instance();
++    VkSurfaceKHR destroyed_surface = vulkan_surface;
+     vulkan_instance->functions().vkDestroySurfaceKHR(vulkan_instance->instance(), vulkan_surface,
+                                                      nullptr);
+     vulkan_surface = VK_NULL_HANDLE;
++#if REX_PLATFORM_ANDROID && defined(REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS)
++    AndroidPresentationDiagnostic(
++        AndroidPresentationDiagnosticEvent::kVulkanSurfaceDestroyed, 0,
++        reinterpret_cast<uintptr_t>(destroyed_surface), 0, 0);
++#endif
+   }
+ }
+ 

@@ -9,6 +9,7 @@ build_root="${ANDROID_PROBE_BUILD_DIR:-/tmp/project8-android-probe-build}"
 app_root="${build_root}/app"
 sdl_java_root="${rexglue_sdk_root}/thirdparty/sdl3/android-project/app/src/main/java"
 sdl_native_lib="${rexglue_sdk_root}/out/android-arm64/libSDL3.so"
+rexruntime_native_lib="${rexglue_sdk_root}/out/android-arm64/librexruntime.so"
 
 mkdir -p "${app_root}/classes" "${app_root}/dex" "${app_root}/res"
 
@@ -38,6 +39,7 @@ jar --create --file "${app_root}/probe-classes.jar" -C "${app_root}/classes" .
 mkdir -p "${app_root}/zip/lib/arm64-v8a"
 cp "${build_root}/native/libmain.so" "${app_root}/zip/lib/arm64-v8a/"
 cp "${sdl_native_lib}" "${app_root}/zip/lib/arm64-v8a/"
+cp "${rexruntime_native_lib}" "${app_root}/zip/lib/arm64-v8a/"
 cp "${app_root}/dex/classes.dex" "${app_root}/zip/"
 (cd "${app_root}/zip" && zip -q -r "${app_root}/unsigned-with-native.apk" .)
 cat "${app_root}/unsigned.apk" > "${app_root}/merged.apk"
