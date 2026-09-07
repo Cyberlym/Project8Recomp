@@ -270,3 +270,21 @@ o probe não inventa um `VkResult` que essa API não fornece.
 após a correção dos testes de handles e enumeração. A execução física atual no
 Moto G34 continua sendo evidência relatada nos registros da Etapa 4, não foi
 reproduzida nesta sessão.
+
+## 2026-09-07 — Etapa 5: blocker no núcleo ReXGlue
+
+**Fato:** a árvore pública fixa o ReXGlue SDK `v0.10.0` e os patches listados em
+`patches/rexglue-sdk/series`, mas não contém o checkout/prefix do SDK nem fontes
+geradas. O mecanismo documentado exige aplicar os patches a um checkout externo
+e construir o SDK.
+
+**Dependência exata:** o único target ReXGlue do projeto, `thps_p8`, inclui
+`generated/default/thps_p8_init.h`, inclui `config/generated/rexglue.cmake` e
+chama `rexglue_setup_target(thps_p8)`. O primeiro arquivo é produzido por
+`rexglue codegen` a partir de `default.xex`; o segundo e as bibliotecas vêm do
+SDK configurado. Sem esses artefatos, não há target independente observável para
+linkar ou inicializar no Android.
+
+**Decisão:** a Etapa 5A está bloqueada antes da Fase 5B/5C. Nenhum stub,
+substituição de API ou runtime presumido foi criado; não houve build, codegen,
+download, uso de ISO/default.xex ou alteração de código Android.
