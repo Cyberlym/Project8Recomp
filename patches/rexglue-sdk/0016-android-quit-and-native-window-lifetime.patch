@@ -1,0 +1,64 @@
+diff --git a/src/ui/CMakeLists.txt b/src/ui/CMakeLists.txt
+index 9f698e9..ed4acd7 100644
+--- a/src/ui/CMakeLists.txt
++++ b/src/ui/CMakeLists.txt
+@@ -153,3 +153,7 @@
+ # Platform-specific dependencies
+-if(UNIX AND NOT APPLE AND NOT ANDROID)
++if(ANDROID)
++    # AndroidNativeWindowSurface owns an ANativeWindow reference while Vulkan
++    # creates and destroys its surface; acquire/release are in libandroid.
++    target_link_libraries(rexui PUBLIC android)
++elseif(UNIX AND NOT APPLE)
+     find_package(PkgConfig REQUIRED)
+diff --git a/src/ui/surface_android.cpp b/src/ui/surface_android.cpp
+index 4499702..b11851c 100644
+--- a/src/ui/surface_android.cpp
++++ b/src/ui/surface_android.cpp
+@@ -1,3 +1,5 @@
++#include <android/native_window.h>
++
+ #include <SDL3/SDL_video.h>
+ 
+ #include <rex/ui/surface_android.h>
+@@ -12,6 +14,10 @@ AndroidNativeWindowSurface::~AndroidNativeWindowSurface() {
+       AndroidPresentationDiagnosticEvent::kSurfaceDestroyed, 0,
+       reinterpret_cast<uintptr_t>(native_window_), 0, 0);
+ #endif
++  // Create takes one reference because SDL may release its property during a
++  // surface destroy while the presenter is still disconnecting. This matching
++  // release happens only after the Vulkan surface has been destroyed.
++  ANativeWindow_release(native_window_);
+ }
+ 
+ std::unique_ptr<AndroidNativeWindowSurface>
+@@ -25,6 +31,9 @@ AndroidNativeWindowSurface::Create(SDL_Window* sdl_window) {
+   if (!native_window) {
+     return nullptr;
+   }
++  // SDL owns the property value. Keep an independent reference for the whole
++  // lifetime of this Surface, including vkCreateAndroidSurfaceKHR.
++  ANativeWindow_acquire(native_window);
+   return std::unique_ptr<AndroidNativeWindowSurface>(
+       new AndroidNativeWindowSurface(sdl_window, native_window));
+ }
+diff --git a/src/ui/windowed_app_context_sdl.cpp b/src/ui/windowed_app_context_sdl.cpp
+index dc0b4c2..ba0cec8 100644
+--- a/src/ui/windowed_app_context_sdl.cpp
++++ b/src/ui/windowed_app_context_sdl.cpp
+@@ -210,6 +210,15 @@ void SDLWindowedAppContext::ProcessQuitRequest() {
+       window->HandleWindowEvent(close_event);
+     }
+   }
++#if REX_PLATFORM_ANDROID
++  // nativeSendQuit is delivered as SDL_EVENT_QUIT after Android has destroyed
++  // the Activity. A close request alone only tears down the Window; unlike a
++  // desktop close button, there is no surviving native window to keep the SDL
++  // main loop alive for. Terminate the loop after listeners have received their
++  // normal closing notification so SDL_main can return and Java can retire this
++  // generation before starting a replacement Activity.
++  QuitFromUIThread();
++#endif
+ }
+ 
+ }  // namespace rex::ui

@@ -990,3 +990,27 @@ O manifesto confirma ABI `arm64-v8a`, minSdk 26 e targetSdk 35; o pacote contém
 `libmain.so`, `librexruntime.so` e `libSDL3.so`, e a assinatura v2/v3 foi
 verificada. O resultado permanece **IMPLEMENTED, DEVICE TEST REQUIRED**; o
 Stage 5 não foi marcado como completo e o Stage 6 não foi iniciado.
+
+## 2026-09-08 — Correção local dos blockers de recreation e rotação
+
+`nativeSendQuit()` já enfileirava `SDL_EVENT_QUIT`, mas o loop ReXGlue apenas
+fechava a janela. Como o probe não instala listener que chame
+`QuitFromUIThread()`, a geração antiga nunca retornava. No Android, após o
+fechamento normal aos listeners, o contexto agora solicita quit: o loop retorna,
+`SDL_main` termina e o handoff do patch 0015 pode encerrar a geração antes da
+próxima começar.
+
+O wrapper `AndroidNativeWindowSurface` guardava emprestado o ponteiro da
+propriedade SDL. Ele agora faz `ANativeWindow_acquire` na criação e o release
+pareado no destrutor, após a desconexão Vulkan; `rexui` liga `libandroid`. Isso
+mantém a janela válida durante `vkCreateAndroidSurfaceKHR`, sem alterar desktop
+nem criar caminho Vulkan paralelo.
+
+O patch 0016 reaplica e reverte limpo sobre v0.10.0 com 0001–0015; SDL3 segue
+em `8bf3b7215ad9fc3deb583c6a3a37c6c67f2e24e4`. `git diff --check`, patch series
+e gate de conteúdo passaram. Ninja incremental `--parallel 2` ligou
+`librexruntime.so` e `libmain.so`; sem clean, download ou codegen. APK novo:
+`android/Project8VulkanProbe-arm64-v8a.apk`, 24.359.627 bytes, SHA-256
+`508968cf2ab1b887c40491e4ac1dfc3ec4cda05d6e45f5f2051cee3c8c6694e9`.
+Assinaturas v2/v3 verificadas. **BUILD VERIFIED, DEVICE TEST REQUIRED**; 5B.4
+não é device verified, a Etapa 5 não está completa e a Etapa 6 não foi iniciada.
