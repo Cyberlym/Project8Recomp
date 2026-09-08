@@ -965,3 +965,28 @@ nova geração. O upstream SDL3 oficial ainda não contém correção equivalent
 Validação sem toolchain: parse estrutural do patch, série 0001–0015 e
 `git diff --check` passaram. Nenhum SDK/NDK/check-out temporário foi restaurado,
 nenhum build foi executado e o resultado permanece **IMPLEMENTED, UNVERIFIED**.
+
+## 2026-09-08 — Patch SDL3 reproduzível e APK para teste físico
+
+O patch 0015 foi regenerado nativamente contra o submodule SDL3 exatamente em
+`8bf3b7215ad9fc3deb583c6a3a37c6c67f2e24e4`. Ele agora usa caminhos relativos
+à raiz SDL3 e aplica com `-p1`; a aplicação limpa e `git diff --check` foram
+comprovados em um segundo worktree nessa mesma revisão. O helper
+`tools/apply_rexglue_patch_series.sh` aplica 0001–0014 na raiz ReXGlue e 0015
+em `thirdparty/sdl3`, recusando revisão divergente ou hunk que não aplique
+exatamente.
+
+O laboratório persistente fica em `/workspaces/.project8-build-cache/`:
+Android SDK em `/workspaces/.project8-build-cache/android-sdk`, NDK
+`27.2.12479018`, checkout ReXGlue v0.10.0 em
+`/workspaces/.project8-build-cache/rexglue-v0.10.0` e build em
+`/workspaces/.project8-build-cache/rexglue-build`. Para retomar somente o Ninja
+incremental: `cmake --build /workspaces/.project8-build-cache/rexglue-build/native --parallel 2`.
+
+O APK novo está em `android/Project8VulkanProbe-arm64-v8a.apk`, possui
+24.355.531 bytes e SHA-256
+`de6bf89a90cf7e43b0a5294702663c9df3e684aa0e8ff7e5df3f1cc854f8646e`.
+O manifesto confirma ABI `arm64-v8a`, minSdk 26 e targetSdk 35; o pacote contém
+`libmain.so`, `librexruntime.so` e `libSDL3.so`, e a assinatura v2/v3 foi
+verificada. O resultado permanece **IMPLEMENTED, DEVICE TEST REQUIRED**; o
+Stage 5 não foi marcado como completo e o Stage 6 não foi iniciado.

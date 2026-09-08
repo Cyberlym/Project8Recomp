@@ -13,4 +13,5 @@
 *.png binary
 *.bmp binary
 *.ttf binary
-*.patch -text
+# Unified diffs contain space-prefixed empty context lines by definition.
+*.patch -text whitespace=-blank-at-eol,-blank-at-eof

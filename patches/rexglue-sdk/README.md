@@ -12,17 +12,16 @@ checkout:
 
 ```sh
 git checkout v0.10.0
-while IFS= read -r patch; do
-  git apply --check --index "/path/to/Project8Recomp/patches/rexglue-sdk/$patch"
-  git apply --index "/path/to/Project8Recomp/patches/rexglue-sdk/$patch"
-done < /path/to/Project8Recomp/patches/rexglue-sdk/series
 git submodule sync --recursive
 git submodule update --init --recursive
+/path/to/Project8Recomp/tools/apply_rexglue_patch_series.sh "$PWD"
 ```
 
 `--index` is required because the MoltenVK revision is a submodule gitlink. A
 plain working-tree-only `git apply` does not advance the recorded commit for an
-uninitialized submodule.
+uninitialized submodule. Patch 0015 is applied with `-p1` inside the pinned
+SDL3 submodule because its diff uses paths native to that repository; this
+modifies neither the SDL3 HEAD nor the gitlink recorded by ReXGlue.
 
 ## What the overlay carries
 

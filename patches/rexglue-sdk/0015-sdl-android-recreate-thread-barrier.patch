@@ -1,8 +1,8 @@
-diff --git a/thirdparty/sdl3/android-project/app/src/main/java/org/libsdl/app/SDLActivity.java b/thirdparty/sdl3/android-project/app/src/main/java/org/libsdl/app/SDLActivity.java
-index 16524a1..bab91d4 100644
---- a/thirdparty/sdl3/android-project/app/src/main/java/org/libsdl/app/SDLActivity.java
-+++ b/thirdparty/sdl3/android-project/app/src/main/java/org/libsdl/app/SDLActivity.java
-@@ -22,6 +22,7 @@ import android.net.Uri;
+diff --git a/android-project/app/src/main/java/org/libsdl/app/SDLActivity.java b/android-project/app/src/main/java/org/libsdl/app/SDLActivity.java
+index dcc61d8729553b0d15c2694c36de653aa9bcc0b3..a08a16f09831c6486f61c8852424a4110fe79bbd 100644
+--- a/android-project/app/src/main/java/org/libsdl/app/SDLActivity.java
++++ b/android-project/app/src/main/java/org/libsdl/app/SDLActivity.java
+@@ -23,6 +23,7 @@ import android.net.Uri;
  import android.os.Build;
  import android.os.Bundle;
  import android.os.Handler;
@@ -10,7 +10,7 @@ index 16524a1..bab91d4 100644
  import android.os.LocaleList;
  import android.os.Message;
  import android.os.ParcelFileDescriptor;
-@@ -219,6 +220,20 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+@@ -227,6 +228,20 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
      protected static boolean mSDLMainFinished = false;
      protected static boolean mActivityCreated = false;
      private static SDLFileDialogState mFileDialogState = null;
@@ -29,14 +29,12 @@ index 16524a1..bab91d4 100644
 +    private boolean mSDLActivityGenerationFinalized;
 +    private long mSDLActivityGeneration;
      protected static boolean mDispatchingKeyEvent = false;
--
-+
+ 
      public static SDLGenericMotionListener_API14 getMotionListener() {
-@@ -227,6 +242,189 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+@@ -245,6 +260,189 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
          return mMotionListener;
      }
--
-+
+ 
 +    protected final boolean isSDLActivityStartDeferred() {
 +        return mSDLActivityStartDeferred;
 +    }
@@ -223,42 +221,37 @@ index 16524a1..bab91d4 100644
      /**
       * The application entry point, called on a dedicated thread (SDLThread).
       * The default implementation uses the getMainSharedObject() and getMainFunction() methods
-@@ -382,6 +580,10 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+@@ -350,6 +548,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+         Log.v(TAG, "onCreate()");
          super.onCreate(savedInstanceState);
--
-+
--
-+
+ 
 +        if (deferSDLActivityStartIfNeeded()) {
 +            return;
 +        }
-+
+ 
          /* Control activity re-creation */
          if (mSDLMainFinished || mActivityCreated) {
-               boolean allow_recreate = SDLActivity.nativeAllowRecreateActivity();
-@@ -526,6 +728,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+@@ -527,6 +728,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
      protected void onPause() {
          Log.v(TAG, "onPause()");
          super.onPause();
 +        if (!isCurrentSDLActivity(this)) {
 +            return;
 +        }
--
-+
+ 
          if (mHIDDeviceManager != null) {
              mHIDDeviceManager.setFrozen(true);
-@@ -540,6 +745,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+@@ -540,6 +744,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
      protected void onResume() {
          Log.v(TAG, "onResume()");
          super.onResume();
 +        if (!isCurrentSDLActivity(this)) {
 +            return;
 +        }
--
-+
+ 
          if (mHIDDeviceManager != null) {
              mHIDDeviceManager.setFrozen(false);
-@@ -553,6 +761,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+@@ -553,6 +760,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
      protected void onStop() {
          Log.v(TAG, "onStop()");
          super.onStop();
@@ -268,7 +261,7 @@ index 16524a1..bab91d4 100644
          if (mHasMultiWindow) {
              pauseNativeThread();
          }
-@@ -563,6 +774,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+@@ -562,6 +772,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
      protected void onStart() {
          Log.v(TAG, "onStart()");
          super.onStart();
@@ -278,44 +271,40 @@ index 16524a1..bab91d4 100644
          if (mHasMultiWindow) {
              resumeNativeThread();
          }
-@@ -615,6 +829,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+@@ -615,6 +828,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
      public void onWindowFocusChanged(boolean hasFocus) {
          super.onWindowFocusChanged(hasFocus);
          Log.v(TAG, "onWindowFocusChanged(): " + hasFocus);
 +        if (!isCurrentSDLActivity(this)) {
 +            return;
 +        }
--
-+
+ 
          if (SDLActivity.mBrokenLibraries) {
             return;
-@@ -641,6 +858,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+@@ -641,6 +857,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
      public void onTrimMemory(int level) {
          Log.v(TAG, "onTrimMemory()");
          super.onTrimMemory(level);
 +        if (!isCurrentSDLActivity(this)) {
 +            return;
 +        }
--
-+
+ 
          if (SDLActivity.mBrokenLibraries) {
             return;
-@@ -653,6 +873,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+@@ -653,6 +872,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
      public void onConfigurationChanged(Configuration newConfig) {
          Log.v(TAG, "onConfigurationChanged()");
          super.onConfigurationChanged(newConfig);
 +        if (!isCurrentSDLActivity(this)) {
 +            return;
 +        }
--
-+
+ 
          if (SDLActivity.mBrokenLibraries) {
             return;
-@@ -675,6 +895,22 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+@@ -677,6 +899,22 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
      protected void onDestroy() {
          Log.v(TAG, "onDestroy()");
--
-+
+ 
 +        mSDLActivityDestroyed = true;
 +        if (mSDLActivityStartDeferred) {
 +            synchronized (mSDLGenerationLock) {
@@ -335,11 +324,10 @@ index 16524a1..bab91d4 100644
          if (mHIDDeviceManager != null) {
              HIDDeviceManager.release(mHIDDeviceManager);
              mHIDDeviceManager = null;
-@@ -688,9 +924,53 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+@@ -689,9 +927,53 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
             return;
          }
--
-+
+ 
 +        final Thread generationThread;
 +        final long generation;
 +        final boolean nativeMainReturned;
@@ -359,8 +347,7 @@ index 16524a1..bab91d4 100644
 +
          if (SDLActivity.mSDLThread != null) {
 +            final Thread sdlThread = SDLActivity.mSDLThread;
--
-+
+ 
              // Send Quit event to "SDLThread" thread
 +            if (generation != 0 && SDLActivity.nativeAllowRecreateActivity()) {
 +                synchronized (mSDLGenerationLock) {
@@ -389,22 +376,20 @@ index 16524a1..bab91d4 100644
 +            }
 +
              SDLActivity.nativeSendQuit();
--
-+
+ 
              // Wait for "SDLThread" thread to end
-@@ -705,7 +985,10 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
-                 Log.v(TAG, "Problem stopping SDLThread: " + e);
+@@ -706,7 +988,10 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
              }
          }
+ 
 +        emitSDLGenerationEvent(this, "NATIVE_QUIT_ENTER", generation);
          SDLActivity.nativeQuit();
 +        emitSDLGenerationEvent(this, "NATIVE_QUIT_EXIT", generation);
 +        abandonSDLGenerationAfterUpstreamDestroy(this, generationThread);
--
-+
+ 
          super.onDestroy();
      }
-@@ -847,13 +1130,39 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+@@ -847,13 +1132,39 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
          if (mNextNativeState == NativeState.RESUMED) {
              if (mSurface.mIsSurfaceReady && (mHasFocus || mHasMultiWindow) && mIsResumedCalled) {
                  if (mSDLThread == null) {
@@ -415,8 +400,7 @@ index 16524a1..bab91d4 100644
                      // This is the entry point to the C app.
                      // Start up the C app thread and enable sensor input for the first time
                      // FIXME: Why aren't we enabling sensor input at start?
--
-+
+ 
 -                    mSDLThread = new Thread(new SDLMain(), "SDLThread");
 +                    synchronized (mSDLGenerationLock) {
 +                        if (mSDLActiveGeneration != 0) {
@@ -444,11 +428,11 @@ index 16524a1..bab91d4 100644
 -                    mSDLThread.start();
 +                    thread.start();
 +                    emitSDLGenerationEvent(owner, "SDL_GENERATION_STARTED", generation);
--
-+
+ 
                      // No nativeResume(), don't signal Android_ResumeSem
                  } else {
-@@ -2151,5 +2460,13 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+@@ -2150,6 +2461,14 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+     Simple runnable to start the SDL application
  */
  class SDLMain implements Runnable {
 +    private final SDLActivity owner;
@@ -462,10 +446,9 @@ index 16524a1..bab91d4 100644
      @Override
      public void run() {
          // Runs SDLActivity.main()
-@@ -2161,15 +2478,11 @@ class SDLMain implements Runnable {
+@@ -2161,16 +2480,12 @@ class SDLMain implements Runnable {
          }
--
-+
+ 
          SDLActivity.nativeInitMainThread();
 -        SDLActivity.mSingleton.main();
 -        SDLActivity.nativeCleanupMainThread();
@@ -485,31 +468,34 @@ index 16524a1..bab91d4 100644
 +        }
      }
  }
-diff --git a/thirdparty/sdl3/android-project/app/src/main/java/org/libsdl/app/SDLSurface.java b/thirdparty/sdl3/android-project/app/src/main/java/org/libsdl/app/SDLSurface.java
-index 5f058e5..b35853f 100644
---- a/thirdparty/sdl3/android-project/app/src/main/java/org/libsdl/app/SDLSurface.java
-+++ b/thirdparty/sdl3/android-project/app/src/main/java/org/libsdl/app/SDLSurface.java
-@@ -41,6 +41,8 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
+ 
+@@ -2227,4 +2542,3 @@ class SDLClipboardHandler implements
+         SDLActivity.onNativeClipboardChanged();
+     }
+ }
+-
+diff --git a/android-project/app/src/main/java/org/libsdl/app/SDLSurface.java b/android-project/app/src/main/java/org/libsdl/app/SDLSurface.java
+index 1579b7334539a204df3dff2a1bb2c4056d1020cb..4a4fef8469022328a1ad74a36cd6687d4898c71e 100644
+--- a/android-project/app/src/main/java/org/libsdl/app/SDLSurface.java
++++ b/android-project/app/src/main/java/org/libsdl/app/SDLSurface.java
+@@ -48,6 +48,8 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
      // Pinch events
      private final ScaleGestureDetector scaleGestureDetector;
--
-+
+ 
 +    private final SDLActivity mOwner;
 +
      // Startup
      protected SDLSurface(Context context) {
          super(context);
-@@ -48,6 +50,7 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
--
-+
+@@ -55,6 +57,7 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
+ 
          scaleGestureDetector = new ScaleGestureDetector(context, this);
--
-+
+ 
 +        mOwner = (SDLActivity)context;
          setFocusable(true);
          setFocusableInTouchMode(true);
          requestFocus();
-@@ -87,6 +90,9 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
+@@ -96,6 +99,9 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
      @Override
      public void surfaceCreated(SurfaceHolder holder) {
          Log.v("SDL", "surfaceCreated()");
@@ -518,13 +504,11 @@ index 5f058e5..b35853f 100644
 +        }
          SDLActivity.onNativeSurfaceCreated();
      }
--
-+
-@@ -95,6 +101,10 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
+ 
+@@ -104,6 +110,10 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
      public void surfaceDestroyed(SurfaceHolder holder) {
          Log.v("SDL", "surfaceDestroyed()");
--
-+
+ 
 +        if (!SDLActivity.isCurrentSDLActivity(mOwner)) {
 +            return;
 +        }
@@ -532,14 +516,12 @@ index 5f058e5..b35853f 100644
          // Transition to pause, if needed
          SDLActivity.mNextNativeState = SDLActivity.NativeState.PAUSED;
          SDLActivity.handleNativeState();
-@@ -109,7 +119,7 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
+@@ -118,7 +128,7 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
                                 int format, int width, int height) {
          Log.v("SDL", "surfaceChanged()");
--
-+
+ 
 -        if (SDLActivity.mSingleton == null) {
 +        if (!SDLActivity.isCurrentSDLActivity(mOwner)) {
              return;
          }
--
-+
+ 
