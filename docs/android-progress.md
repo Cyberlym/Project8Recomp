@@ -943,3 +943,25 @@ possível reaplicar a série contra v0.10.0, compilar Java/C++ ou gerar um APK n
 A correção e a exportação estão **IMPLEMENTED, UNVERIFIED**; o crash de rotação
 permanece **ROOT CAUSE UNKNOWN**, aguardando o tombstone/export físico. O Stage 5
 não é marcado como completo e o Stage 6 não foi iniciado.
+
+## 2026-09-08 — Redesenho não bloqueante do handoff SDL
+
+A barreira inicial do patch 0015 foi reprovada antes do build porque fazia
+`join()` ilimitado na thread principal do Android. Ela foi substituída por um
+handoff geracional assíncrono. Uma Activity substituta registra a próxima
+geração, apresenta estado de espera e não chama `SDL.initialize()` nem inicia
+`SDLMain` enquanto a geração ativa existir. A geração antiga captura sua
+Activity e ID, executa `nativeCleanupMainThread()` ao retornar e entrega sua
+thread a um reaper separado, que faz uma única espera de 1 segundo. Somente a
+confirmação `!thread.isAlive()` permite que a thread principal chame
+`nativeQuit()`, finalize os estáticos da geração antiga e recrie a Activity
+pendente. Se o quit for perdido ou a confirmação expirar, a nova geração não é
+iniciada e a UI permanece desbloqueada, com breadcrumb explícito.
+
+Callbacks de lifecycle e `SDLSurface` agora validam a Activity proprietária;
+conclusões com ID/thread/owner antigos não alteram a geração atual. O reset de
+`mSDLMainFinished` saiu do probe e ocorre apenas na admissão controlada de uma
+nova geração. O upstream SDL3 oficial ainda não contém correção equivalente.
+Validação sem toolchain: parse estrutural do patch, série 0001–0015 e
+`git diff --check` passaram. Nenhum SDK/NDK/check-out temporário foi restaurado,
+nenhum build foi executado e o resultado permanece **IMPLEMENTED, UNVERIFIED**.

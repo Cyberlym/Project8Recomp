@@ -73,11 +73,18 @@ public final class ProbeActivity extends SDLActivity {
                 "saved_state=" + (state != null) + " intent_flags=0x" +
                         Integer.toHexString(launchIntent != null ? launchIntent.getFlags() : 0));
         super.onCreate(state);
-        // The previous generation is fully joined by the SDL recreation patch before
-        // Android can enter this callback. This reset therefore describes the new main.
-        mSDLMainFinished = false;
-        appendBreadcrumb("SDL_STATE_RESET", staticSDLState());
-        appendBreadcrumb("SDL_GENERATION_ID", "generation=" + activityGeneration);
+        if (isSDLActivityStartDeferred()) {
+            TextView waiting = new TextView(this);
+            waiting.setText("Waiting for the previous SDL session to stop safely.");
+            waiting.setTextColor(Color.WHITE);
+            waiting.setTextSize(18);
+            waiting.setGravity(Gravity.CENTER);
+            waiting.setBackgroundColor(Color.rgb(16, 16, 16));
+            setContentView(waiting);
+            appendBreadcrumb("ACTIVITY_ON_CREATE_EXIT",
+                    "start_deferred=true " + staticSDLState());
+            return;
+        }
         nativeActivityCreated();
         SurfaceView sdlSurface = (SurfaceView)mSurface;
         SurfaceHolder holder = sdlSurface.getHolder();
@@ -231,18 +238,18 @@ public final class ProbeActivity extends SDLActivity {
     }
     @Override protected void onDestroy() {
         appendBreadcrumb("ACTIVITY_ON_DESTROY_ENTER", staticSDLState());
-        appendBreadcrumb("SDL_NATIVE_THREAD_STOP_REQUEST", staticSDLState());
-        Thread generationThread = mSDLThread;
-        appendBreadcrumb("SDL_THREAD_JOIN_BEGIN", threadState(generationThread));
         handler.removeCallbacks(refresh);
-        nativeActivityDestroyed();
-        super.onDestroy();
-        if (generationThread != null && generationThread.isAlive()) {
-            appendBreadcrumb("SDL_THREAD_JOIN_TIMEOUT", threadState(generationThread));
-        } else {
-            appendBreadcrumb("SDL_THREAD_JOIN_END", threadState(generationThread));
+        boolean deferred = isSDLActivityStartDeferred();
+        if (!deferred) {
+            nativeActivityDestroyed();
         }
-        appendBreadcrumb("ACTIVITY_ON_DESTROY_EXIT", staticSDLState());
+        super.onDestroy();
+        appendBreadcrumb("ACTIVITY_ON_DESTROY_EXIT",
+                "start_deferred=" + deferred + " " + staticSDLState());
+    }
+
+    @Override protected void onSDLGenerationEvent(String event, long generation) {
+        appendBreadcrumb(event, "generation=" + generation + " " + staticSDLState());
     }
 
     @Override protected void onPause() {
@@ -326,12 +333,6 @@ public final class ProbeActivity extends SDLActivity {
                 " alive=" + (thread != null && thread.isAlive()) +
                 " activity_created=" + mActivityCreated +
                 " main_finished=" + mSDLMainFinished;
-    }
-
-    private static String threadState(Thread thread) {
-        return "thread=" + (thread == null ? "null" : thread.getState().name()) +
-                " alive=" + (thread != null && thread.isAlive()) +
-                " java_tid=" + (thread == null ? 0 : thread.getId());
     }
 
     private static String queryPreviousProcessExitReason() {

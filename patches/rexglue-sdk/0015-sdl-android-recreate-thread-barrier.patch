@@ -1,50 +1,545 @@
 diff --git a/thirdparty/sdl3/android-project/app/src/main/java/org/libsdl/app/SDLActivity.java b/thirdparty/sdl3/android-project/app/src/main/java/org/libsdl/app/SDLActivity.java
-index 16524a1..d5d9c4f 100644
+index 16524a1..bab91d4 100644
 --- a/thirdparty/sdl3/android-project/app/src/main/java/org/libsdl/app/SDLActivity.java
 +++ b/thirdparty/sdl3/android-project/app/src/main/java/org/libsdl/app/SDLActivity.java
-@@ -674,19 +674,37 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
-         }
- 
-         if (SDLActivity.mSDLThread != null) {
-+            Thread sdlThread = SDLActivity.mSDLThread;
- 
-             // Send Quit event to "SDLThread" thread
-             SDLActivity.nativeSendQuit();
- 
-             // Wait for "SDLThread" thread to end
--            try {
--                // Use a timeout because:
--                // C SDLmain() thread might have started (mSDLThread.start() called)
--                // while the SDL_Init() might not have been called yet,
--                // and so the previous QUIT event will be discarded by SDL_Init() and app is running, not exiting.
--                SDLActivity.mSDLThread.join(1000);
--            } catch(Exception e) {
--                Log.v(TAG, "Problem stopping SDLThread: " + e);
-+            if (SDLActivity.nativeAllowRecreateActivity()) {
-+                // Java and native state are process-global. A replacement Activity must
-+                // not reset them or start SDL_main while this generation is still using
-+                // them, and nativeQuit below must not destroy its synchronization objects.
+@@ -22,6 +22,7 @@ import android.net.Uri;
+ import android.os.Build;
+ import android.os.Bundle;
+ import android.os.Handler;
++import android.os.Looper;
+ import android.os.LocaleList;
+ import android.os.Message;
+ import android.os.ParcelFileDescriptor;
+@@ -219,6 +220,20 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+     protected static boolean mSDLMainFinished = false;
+     protected static boolean mActivityCreated = false;
+     private static SDLFileDialogState mFileDialogState = null;
++    private static final Object mSDLGenerationLock = new Object();
++    private static long mSDLNextGeneration = 1;
++    private static long mSDLActiveGeneration;
++    private static long mSDLRequestedGeneration;
++    private static Thread mSDLGenerationThread;
++    private static SDLActivity mSDLGenerationOwner;
++    private static SDLActivity mSDLPendingActivity;
++    private static boolean mSDLGenerationStopRequested;
++    private static boolean mSDLGenerationNativeMainReturned;
++
++    private boolean mSDLActivityStartDeferred;
++    private boolean mSDLActivityDestroyed;
++    private boolean mSDLActivityGenerationFinalized;
++    private long mSDLActivityGeneration;
+     protected static boolean mDispatchingKeyEvent = false;
+-
++
+     public static SDLGenericMotionListener_API14 getMotionListener() {
+@@ -227,6 +242,189 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+         return mMotionListener;
+     }
+-
++
++    protected final boolean isSDLActivityStartDeferred() {
++        return mSDLActivityStartDeferred;
++    }
++
++    protected final long getSDLActivityGeneration() {
++        return mSDLActivityGeneration;
++    }
++
++    protected void onSDLGenerationEvent(String event, long generation) {
++    }
++
++    private static void emitSDLGenerationEvent(SDLActivity activity, String event,
++                                               long generation) {
++        if (activity != null) {
++            activity.onSDLGenerationEvent(event, generation);
++        }
++    }
++
++    private boolean deferSDLActivityStartIfNeeded() {
++        synchronized (mSDLGenerationLock) {
++            if (mSDLActiveGeneration == 0) {
++                return false;
++            }
++        }
++        if (!SDLActivity.nativeAllowRecreateActivity()) {
++            return false;
++        }
++
++        long generation;
++        synchronized (mSDLGenerationLock) {
++            if (mSDLActiveGeneration == 0) {
++                return false;
++            }
++            if (mSDLRequestedGeneration == 0) {
++                mSDLRequestedGeneration = mSDLNextGeneration++;
++            }
++            generation = mSDLRequestedGeneration;
++            mSDLPendingActivity = this;
++            mSDLActivityGeneration = generation;
++            mSDLActivityStartDeferred = true;
++        }
++        emitSDLGenerationEvent(this, "SDL_GENERATION_START_REQUEST", generation);
++        emitSDLGenerationEvent(this, "SDL_GENERATION_START_DEFERRED", generation);
++        return true;
++    }
++
++    static boolean isCurrentSDLActivity(SDLActivity activity) {
++        synchronized (mSDLGenerationLock) {
++            return activity == mSingleton &&
++                    (mSDLActiveGeneration == 0 || activity == mSDLGenerationOwner);
++        }
++    }
++
++    static void notifySDLMainReturned(final SDLActivity owner,
++                                      final long generation,
++                                      final Thread thread) {
++        boolean stale;
++        synchronized (mSDLGenerationLock) {
++            stale = generation != mSDLActiveGeneration || owner != mSDLGenerationOwner ||
++                    thread != mSDLGenerationThread;
++            if (!stale) {
++                mSDLGenerationNativeMainReturned = true;
++            }
++        }
++        if (stale) {
++            emitSDLGenerationEvent(owner, "SDL_GENERATION_STALE_CALLBACK", generation);
++            return;
++        }
++
++        // SDLMain is still alive while its final callback executes. A separate reaper
++        // performs one bounded join, so the UI thread never waits and the next native
++        // generation is not admitted until Thread.isAlive() is observably false.
++        new Thread(new Runnable() {
++            @Override
++            public void run() {
++                emitSDLGenerationEvent(owner, "SDL_THREAD_JOIN_BEGIN", generation);
 +                boolean interrupted = false;
-+                while (sdlThread.isAlive()) {
-+                    try {
-+                        sdlThread.join();
-+                    } catch (InterruptedException e) {
-+                        interrupted = true;
-+                    }
++                try {
++                    thread.join(1000);
++                } catch (InterruptedException exception) {
++                    interrupted = true;
 +                }
++                final boolean terminated = !thread.isAlive();
 +                if (interrupted) {
 +                    Thread.currentThread().interrupt();
 +                }
-+            } else {
-+                try {
-+                    // Use a timeout because:
-+                    // C SDLmain() thread might have started (mSDLThread.start() called)
-+                    // while the SDL_Init() might not have been called yet,
-+                    // and so the previous QUIT event will be discarded by SDL_Init() and app is running, not exiting.
-+                    sdlThread.join(1000);
-+                } catch(Exception e) {
-+                    Log.v(TAG, "Problem stopping SDLThread: " + e);
++                emitSDLGenerationEvent(owner,
++                        terminated ? "SDL_THREAD_JOIN_END" : "SDL_THREAD_JOIN_TIMEOUT",
++                        generation);
++                new Handler(Looper.getMainLooper()).post(new Runnable() {
++                    @Override
++                    public void run() {
++                        if (terminated) {
++                            onSDLGenerationThreadTerminated(owner, generation, thread);
++                        }
++                    }
++                });
++            }
++        }, "SDLThreadReaper-" + generation).start();
++    }
++
++    private static void onSDLGenerationThreadTerminated(SDLActivity owner, long generation,
++                                                        Thread thread) {
++        boolean stale;
++        synchronized (mSDLGenerationLock) {
++            stale = generation != mSDLActiveGeneration || owner != mSDLGenerationOwner ||
++                    thread != mSDLGenerationThread;
++            if (!mSDLGenerationNativeMainReturned || thread.isAlive()) {
++                return;
++            }
++        }
++        if (stale) {
++            emitSDLGenerationEvent(owner, "SDL_GENERATION_STALE_CALLBACK", generation);
++            return;
++        }
++        emitSDLGenerationEvent(owner, "SDL_GENERATION_THREAD_EXIT", generation);
++        if (owner.mSDLActivityDestroyed) {
++            finalizeSDLGeneration(owner, generation, thread);
++        } else if (!owner.isFinishing()) {
++            owner.finish();
++        }
++    }
++
++    private static boolean finalizeSDLGeneration(SDLActivity owner, long generation,
++                                                 Thread thread) {
++        SDLActivity pending;
++        synchronized (mSDLGenerationLock) {
++            if (generation != mSDLActiveGeneration || owner != mSDLGenerationOwner ||
++                    thread != mSDLGenerationThread || thread.isAlive() ||
++                    !mSDLGenerationNativeMainReturned) {
++                return false;
++            }
++            pending = mSDLPendingActivity;
++        }
++        emitSDLGenerationEvent(owner, "NATIVE_QUIT_ENTER", generation);
++        SDLActivity.nativeQuit();
++        emitSDLGenerationEvent(owner, "NATIVE_QUIT_EXIT", generation);
++
++        synchronized (mSDLGenerationLock) {
++            if (generation != mSDLActiveGeneration || owner != mSDLGenerationOwner ||
++                    thread != mSDLGenerationThread) {
++                return false;
++            }
++            mSDLPendingActivity = null;
++            mSDLActiveGeneration = 0;
++            mSDLGenerationThread = null;
++            mSDLGenerationOwner = null;
++            mSDLGenerationStopRequested = false;
++            mSDLGenerationNativeMainReturned = false;
++            mSDLThread = null;
++            mSDLMainFinished = true;
++            mSingleton = null;
++            owner.mSDLActivityGenerationFinalized = true;
++        }
++        emitSDLGenerationEvent(owner, "SDL_MAIN_FINISHED_TRUE", generation);
++        emitSDLGenerationEvent(owner, "SDL_GENERATION_FINALIZED", generation);
++        if (pending != null && !pending.isFinishing() && !pending.isDestroyed()) {
++            pending.recreate();
++        }
++        return true;
++    }
++
++    private static void abandonSDLGenerationAfterUpstreamDestroy(SDLActivity owner,
++                                                                 Thread thread) {
++        synchronized (mSDLGenerationLock) {
++            if (owner != mSDLGenerationOwner || thread != mSDLGenerationThread) {
++                return;
++            }
++            mSDLActiveGeneration = 0;
++            mSDLGenerationThread = null;
++            mSDLGenerationOwner = null;
++            mSDLGenerationStopRequested = false;
++            mSDLGenerationNativeMainReturned = false;
++            mSDLRequestedGeneration = 0;
++            mSDLPendingActivity = null;
++            if (thread != null && !thread.isAlive()) {
++                mSDLThread = null;
++                mSDLMainFinished = true;
++            }
++            owner.mSDLActivityGenerationFinalized = true;
++        }
++    }
++
+     /**
+      * The application entry point, called on a dedicated thread (SDLThread).
+      * The default implementation uses the getMainSharedObject() and getMainFunction() methods
+@@ -382,6 +580,10 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+         super.onCreate(savedInstanceState);
+-
++
+-
++
++        if (deferSDLActivityStartIfNeeded()) {
++            return;
++        }
++
+         /* Control activity re-creation */
+         if (mSDLMainFinished || mActivityCreated) {
+               boolean allow_recreate = SDLActivity.nativeAllowRecreateActivity();
+@@ -526,6 +728,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+     protected void onPause() {
+         Log.v(TAG, "onPause()");
+         super.onPause();
++        if (!isCurrentSDLActivity(this)) {
++            return;
++        }
+-
++
+         if (mHIDDeviceManager != null) {
+             mHIDDeviceManager.setFrozen(true);
+@@ -540,6 +745,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+     protected void onResume() {
+         Log.v(TAG, "onResume()");
+         super.onResume();
++        if (!isCurrentSDLActivity(this)) {
++            return;
++        }
+-
++
+         if (mHIDDeviceManager != null) {
+             mHIDDeviceManager.setFrozen(false);
+@@ -553,6 +761,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+     protected void onStop() {
+         Log.v(TAG, "onStop()");
+         super.onStop();
++        if (!isCurrentSDLActivity(this)) {
++            return;
++        }
+         if (mHasMultiWindow) {
+             pauseNativeThread();
+         }
+@@ -563,6 +774,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+     protected void onStart() {
+         Log.v(TAG, "onStart()");
+         super.onStart();
++        if (!isCurrentSDLActivity(this)) {
++            return;
++        }
+         if (mHasMultiWindow) {
+             resumeNativeThread();
+         }
+@@ -615,6 +829,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+     public void onWindowFocusChanged(boolean hasFocus) {
+         super.onWindowFocusChanged(hasFocus);
+         Log.v(TAG, "onWindowFocusChanged(): " + hasFocus);
++        if (!isCurrentSDLActivity(this)) {
++            return;
++        }
+-
++
+         if (SDLActivity.mBrokenLibraries) {
+            return;
+@@ -641,6 +858,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+     public void onTrimMemory(int level) {
+         Log.v(TAG, "onTrimMemory()");
+         super.onTrimMemory(level);
++        if (!isCurrentSDLActivity(this)) {
++            return;
++        }
+-
++
+         if (SDLActivity.mBrokenLibraries) {
+            return;
+@@ -653,6 +873,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+     public void onConfigurationChanged(Configuration newConfig) {
+         Log.v(TAG, "onConfigurationChanged()");
+         super.onConfigurationChanged(newConfig);
++        if (!isCurrentSDLActivity(this)) {
++            return;
++        }
+-
++
+         if (SDLActivity.mBrokenLibraries) {
+            return;
+@@ -675,6 +895,22 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+     protected void onDestroy() {
+         Log.v(TAG, "onDestroy()");
+-
++
++        mSDLActivityDestroyed = true;
++        if (mSDLActivityStartDeferred) {
++            synchronized (mSDLGenerationLock) {
++                if (mSDLPendingActivity == this) {
++                    mSDLPendingActivity = null;
++                    mSDLRequestedGeneration = 0;
 +                }
++            }
++            super.onDestroy();
++            return;
++        }
++        if (mSDLActivityGenerationFinalized) {
++            super.onDestroy();
++            return;
++        }
++
+         if (mHIDDeviceManager != null) {
+             HIDDeviceManager.release(mHIDDeviceManager);
+             mHIDDeviceManager = null;
+@@ -688,9 +924,53 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+            return;
+         }
+-
++
++        final Thread generationThread;
++        final long generation;
++        final boolean nativeMainReturned;
++        synchronized (mSDLGenerationLock) {
++            generationThread = mSDLGenerationOwner == this ? mSDLGenerationThread : null;
++            generation = mSDLGenerationOwner == this ? mSDLActiveGeneration : 0;
++            nativeMainReturned = generation != 0 && mSDLGenerationNativeMainReturned;
++        }
++
++        if (generation != 0 && nativeMainReturned) {
++            if (!generationThread.isAlive()) {
++                finalizeSDLGeneration(this, generation, generationThread);
++            }
++            super.onDestroy();
++            return;
++        }
++
+         if (SDLActivity.mSDLThread != null) {
++            final Thread sdlThread = SDLActivity.mSDLThread;
+-
++
+             // Send Quit event to "SDLThread" thread
++            if (generation != 0 && SDLActivity.nativeAllowRecreateActivity()) {
++                synchronized (mSDLGenerationLock) {
++                    mSDLGenerationStopRequested = true;
++                }
++                emitSDLGenerationEvent(this, "SDL_GENERATION_STOP_REQUEST", generation);
++                emitSDLGenerationEvent(this, "NATIVE_SEND_QUIT", generation);
++                SDLActivity.nativeSendQuit();
++                new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
++                    @Override
++                    public void run() {
++                        synchronized (mSDLGenerationLock) {
++                            if (generation != mSDLActiveGeneration ||
++                                    sdlThread != mSDLGenerationThread ||
++                                    !mSDLGenerationStopRequested ||
++                                    mSDLGenerationNativeMainReturned) {
++                                return;
++                            }
++                        }
++                        emitSDLGenerationEvent(SDLActivity.this,
++                                "SDL_GENERATION_SHUTDOWN_TIMEOUT", generation);
++                    }
++                }, 1000);
++                super.onDestroy();
++                return;
++            }
++
+             SDLActivity.nativeSendQuit();
+-
++
+             // Wait for "SDLThread" thread to end
+@@ -705,7 +985,10 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+                 Log.v(TAG, "Problem stopping SDLThread: " + e);
              }
          }
++        emitSDLGenerationEvent(this, "NATIVE_QUIT_ENTER", generation);
          SDLActivity.nativeQuit();
++        emitSDLGenerationEvent(this, "NATIVE_QUIT_EXIT", generation);
++        abandonSDLGenerationAfterUpstreamDestroy(this, generationThread);
+-
++
+         super.onDestroy();
+     }
+@@ -847,13 +1130,39 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+         if (mNextNativeState == NativeState.RESUMED) {
+             if (mSurface.mIsSurfaceReady && (mHasFocus || mHasMultiWindow) && mIsResumedCalled) {
+                 if (mSDLThread == null) {
++                    final SDLActivity owner = mSingleton;
++                    final long generation;
++                    final boolean startWasRequested;
++                    final Thread thread;
+                     // This is the entry point to the C app.
+                     // Start up the C app thread and enable sensor input for the first time
+                     // FIXME: Why aren't we enabling sensor input at start?
+-
++
+-                    mSDLThread = new Thread(new SDLMain(), "SDLThread");
++                    synchronized (mSDLGenerationLock) {
++                        if (mSDLActiveGeneration != 0) {
++                            return;
++                        }
++                        startWasRequested = mSDLRequestedGeneration != 0;
++                        generation = startWasRequested ? mSDLRequestedGeneration :
++                                mSDLNextGeneration++;
++                        mSDLRequestedGeneration = 0;
++                        thread = new Thread(new SDLMain(owner, generation), "SDLThread");
++                        mSDLActiveGeneration = generation;
++                        mSDLGenerationThread = thread;
++                        mSDLGenerationOwner = owner;
++                        mSDLGenerationStopRequested = false;
++                        mSDLGenerationNativeMainReturned = false;
++                        owner.mSDLActivityGeneration = generation;
++                        mSDLThread = thread;
++                        mSDLMainFinished = false;
++                    }
++                    if (!startWasRequested) {
++                        emitSDLGenerationEvent(owner, "SDL_GENERATION_START_REQUEST", generation);
++                    }
++                    emitSDLGenerationEvent(owner, "SDL_STATE_RESET", generation);
+                     mSurface.enableSensor(Sensor.TYPE_ACCELEROMETER, true);
+-                    mSDLThread.start();
++                    thread.start();
++                    emitSDLGenerationEvent(owner, "SDL_GENERATION_STARTED", generation);
+-
++
+                     // No nativeResume(), don't signal Android_ResumeSem
+                 } else {
+@@ -2151,5 +2460,13 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+ */
+ class SDLMain implements Runnable {
++    private final SDLActivity owner;
++    private final long generation;
++
++    SDLMain(SDLActivity owner, long generation) {
++        this.owner = owner;
++        this.generation = generation;
++    }
++
+     @Override
+     public void run() {
+         // Runs SDLActivity.main()
+@@ -2161,15 +2478,11 @@ class SDLMain implements Runnable {
+         }
+-
++
+         SDLActivity.nativeInitMainThread();
+-        SDLActivity.mSingleton.main();
+-        SDLActivity.nativeCleanupMainThread();
+-
+-        if (SDLActivity.mSingleton != null && !SDLActivity.mSingleton.isFinishing()) {
+-            // Let's finish the Activity
+-            SDLActivity.mSDLThread = null;
+-            SDLActivity.mSDLMainFinished = true;
+-            SDLActivity.mSingleton.finish();
+-        }  // else: Activity is already being destroyed
+-
++        try {
++            owner.main();
++        } finally {
++            SDLActivity.nativeCleanupMainThread();
++            SDLActivity.notifySDLMainReturned(owner, generation, Thread.currentThread());
++        }
+     }
+ }
+diff --git a/thirdparty/sdl3/android-project/app/src/main/java/org/libsdl/app/SDLSurface.java b/thirdparty/sdl3/android-project/app/src/main/java/org/libsdl/app/SDLSurface.java
+index 5f058e5..b35853f 100644
+--- a/thirdparty/sdl3/android-project/app/src/main/java/org/libsdl/app/SDLSurface.java
++++ b/thirdparty/sdl3/android-project/app/src/main/java/org/libsdl/app/SDLSurface.java
+@@ -41,6 +41,8 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
+     // Pinch events
+     private final ScaleGestureDetector scaleGestureDetector;
+-
++
++    private final SDLActivity mOwner;
++
+     // Startup
+     protected SDLSurface(Context context) {
+         super(context);
+@@ -48,6 +50,7 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
+-
++
+         scaleGestureDetector = new ScaleGestureDetector(context, this);
+-
++
++        mOwner = (SDLActivity)context;
+         setFocusable(true);
+         setFocusableInTouchMode(true);
+         requestFocus();
+@@ -87,6 +90,9 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
+     @Override
+     public void surfaceCreated(SurfaceHolder holder) {
+         Log.v("SDL", "surfaceCreated()");
++        if (!SDLActivity.isCurrentSDLActivity(mOwner)) {
++            return;
++        }
+         SDLActivity.onNativeSurfaceCreated();
+     }
+-
++
+@@ -95,6 +101,10 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
+     public void surfaceDestroyed(SurfaceHolder holder) {
+         Log.v("SDL", "surfaceDestroyed()");
+-
++
++        if (!SDLActivity.isCurrentSDLActivity(mOwner)) {
++            return;
++        }
++
+         // Transition to pause, if needed
+         SDLActivity.mNextNativeState = SDLActivity.NativeState.PAUSED;
+         SDLActivity.handleNativeState();
+@@ -109,7 +119,7 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
+                                int format, int width, int height) {
+         Log.v("SDL", "surfaceChanged()");
+-
++
+-        if (SDLActivity.mSingleton == null) {
++        if (!SDLActivity.isCurrentSDLActivity(mOwner)) {
+             return;
+         }
+-
++
