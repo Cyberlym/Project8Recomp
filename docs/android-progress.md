@@ -889,3 +889,57 @@ O APK diagnóstico incremental tem 24.355.531 bytes e SHA-256
 `bec5ac9ee512e18cbf69bd8827051b41e984c9bd7ec8e83a59afd5125292a5c2`.
 Ele preserva package, ABI, minSdk/targetSdk, assinatura e os checkpoints já
 validados; nenhuma alteração foi feita no ReXGlue ou na série 0001–0014.
+
+## 2026-09-08 — Barreira de geração SDL e exportação de diagnóstico
+
+O trace físico e o código da revisão SDL vendorizada fecham a causa do loop de
+recreation. `SDLActivity.onDestroy()` envia quit, espera somente 1 segundo e
+chama `nativeQuit()` mesmo quando `mSDLThread` continua viva. Essa chamada
+destrói mutexes e semáforo de lifecycle process-globais. A nova Activity então
+executa `SDL.initialize()`, que zera o ponteiro estático da thread, e inicia uma
+nova `SDLMain`. Quando a geração antiga finalmente retorna, `SDLMain.run()` usa
+os campos estáticos já substituídos: marca `mSDLMainFinished`, zera a referência
+da thread nova e chama `finish()` sobre o singleton da Activity nova. Isso
+corresponde à sequência física `nova SDL_NATIVE_THREAD_START` seguida de
+`thread=null`, `main_finished=true` e destruição da nova Activity.
+
+O SDL3 upstream consultado em 2026-09-08 ainda possui o mesmo `join(1000)`, a
+chamada incondicional a `nativeQuit()` e a conclusão de `SDLMain` baseada em
+estado estático. Portanto não há fix oficial posterior para backport. O patch
+`0015-sdl-android-recreate-thread-barrier.patch` mantém o timeout original para
+o comportamento padrão, mas, quando `SDL_ANDROID_ALLOW_RECREATE_ACTIVITY` está
+ativo, espera o encerramento real da geração antes de destruir o estado nativo
+global e permitir outra Activity. Não usa sleep, `Thread.stop`, segundo runtime
+ou timeout aumentado. O probe restaura `mSDLMainFinished=false` somente depois
+dessa barreira, quando já não existe geração antiga.
+
+O crash intermitente de rotação não foi fundido com esse diagnóstico. Os
+callbacks `SurfaceHolder` rodam na thread Java da Activity, enquanto o loop,
+WindowSDL e presenter rodam na SDLThread. O SDL remove sua propriedade e libera
+sua referência de `ANativeWindow` em `onNativeSurfaceDestroyed`; por outro lado,
+uma criação Vulkan bem-sucedida mantém referência própria à janela até
+`vkDestroySurfaceKHR`. Assim, o ponteiro bruto do wrapper, sozinho, não prova
+use-after-free. O último breadcrumb disponível ocorre depois da chamada real a
+`vkDestroySurfaceKHR`, mas sem tombstone não distingue falha posterior,
+concorrência ou outro acesso. Alterar ownership ou presenter neste ponto seria
+especulativo.
+
+O trace privado limitado continua sendo a fonte primária e não há logging por
+frame. Foram acrescentados somente IDs da geração/thread nos callbacks de
+Android, rexui e destroy Vulkan, além do início/fim da barreira e da conclusão
+do main. A UI agora usa `ACTION_OPEN_DOCUMENT_TREE`, persiste a permissão URI e
+cria `Project8Stage5-YYYYMMDD-HHmmss.log` no diretório escolhido via
+`DocumentsContract`. A exportação explícita ocorre em thread separada. Em API
+31 ou superior, um `REASON_CRASH_NATIVE` também tenta ler
+`ApplicationExitInfo.getTraceInputStream()`; quando presente, o tombstone
+protobuf bruto é preservado como `Project8Stage5-native-crash-*.pb`, e quando
+ausente o relatório diz `APPLICATION_EXIT_TRACE: NOT AVAILABLE`.
+
+Validação desta sessão: `tools/check_patch_series.sh`, parse estrutural do patch
+com `git apply --numstat`, `tools/check_no_game_content.sh` e `git diff --check`.
+O checkout ReXGlue patchado, Android SDK/NDK e `/tmp` de build da sessão anterior
+não estão presentes nesta nova sessão. Pela proibição de redownload, não foi
+possível reaplicar a série contra v0.10.0, compilar Java/C++ ou gerar um APK novo.
+A correção e a exportação estão **IMPLEMENTED, UNVERIFIED**; o crash de rotação
+permanece **ROOT CAUSE UNKNOWN**, aguardando o tombstone/export físico. O Stage 5
+não é marcado como completo e o Stage 6 não foi iniciado.

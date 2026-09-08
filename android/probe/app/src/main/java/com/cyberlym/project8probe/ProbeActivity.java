@@ -8,11 +8,13 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.graphics.Color;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Process;
 import android.os.SystemClock;
+import android.provider.DocumentsContract;
 import android.view.Gravity;
 import android.view.Surface;
 import android.view.SurfaceHolder;
@@ -21,24 +23,35 @@ import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 import org.libsdl.app.SDLActivity;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 
 /** SDLActivity plus a small, phone-only probe report overlay. */
 public final class ProbeActivity extends SDLActivity {
-    private static final int CREATE_LOG = 41;
+    private static final int SELECT_LOG_FOLDER = 41;
     private static final String DIAGNOSTIC_PREFS = "stage5_lifecycle_diagnostics";
     private static final String TRACE_KEY = "trace";
     private static final String SEQUENCE_KEY = "sequence";
     private static final String BOOT_KEY = "boot_generation";
+    private static final String LOG_TREE_KEY = "log_tree_uri";
     private static final int MAX_TRACE_CHARS = 65536;
+    private static final int MAX_EXIT_TRACE_BYTES = 8 * 1024 * 1024;
     private static android.content.Context diagnosticContext;
     private static String sessionId = "";
     private static int bootGeneration;
     private static int activityGeneration;
     private static String previousProcessExitReason = "NOT QUERIED";
+    private static String applicationExitTraceStatus = "NOT AVAILABLE";
+    private static ApplicationExitInfo previousExitInfo;
+    private static byte[] previousApplicationExitTrace;
     private final Handler handler = new Handler();
     private int recordedSurfaceIdentity;
     private TextView report;
@@ -60,6 +73,11 @@ public final class ProbeActivity extends SDLActivity {
                 "saved_state=" + (state != null) + " intent_flags=0x" +
                         Integer.toHexString(launchIntent != null ? launchIntent.getFlags() : 0));
         super.onCreate(state);
+        // The previous generation is fully joined by the SDL recreation patch before
+        // Android can enter this callback. This reset therefore describes the new main.
+        mSDLMainFinished = false;
+        appendBreadcrumb("SDL_STATE_RESET", staticSDLState());
+        appendBreadcrumb("SDL_GENERATION_ID", "generation=" + activityGeneration);
         nativeActivityCreated();
         SurfaceView sdlSurface = (SurfaceView)mSurface;
         SurfaceHolder holder = sdlSurface.getHolder();
@@ -73,6 +91,9 @@ public final class ProbeActivity extends SDLActivity {
             @Override public void surfaceDestroyed(SurfaceHolder callbackHolder) {
                 Surface surface = callbackHolder.getSurface();
                 int identity = surface != null ? System.identityHashCode(surface) : recordedSurfaceIdentity;
+                appendBreadcrumb("ANDROID_SURFACE_CALLBACK_THREAD_ID",
+                        "callback=destroyed java_tid=" + Thread.currentThread().getId() +
+                                " identity=" + identity);
                 appendBreadcrumb("ANDROID_SURFACE_DESTROYED", "identity=" + identity);
                 nativeAndroidSurfaceDestroyed(identity);
                 recordedSurfaceIdentity = 0;
@@ -85,9 +106,14 @@ public final class ProbeActivity extends SDLActivity {
         report = new TextView(this); report.setTextColor(Color.WHITE); report.setTextSize(14); report.setGravity(Gravity.START);
         panel.addView(report, new LinearLayout.LayoutParams(-1, 0, 1));
         LinearLayout buttons = new LinearLayout(this);
-        Button export = new Button(this); export.setText("EXPORT LOG"); export.setOnClickListener(v -> exportLog());
+        Button selectFolder = new Button(this); selectFolder.setText("SELECT LOG FOLDER");
+        selectFolder.setOnClickListener(v -> selectLogFolder());
+        Button export = new Button(this); export.setText("EXPORT DIAGNOSTICS");
+        export.setOnClickListener(v -> exportDiagnostics());
         Button copy = new Button(this); copy.setText("COPY REPORT"); copy.setOnClickListener(v -> copyReport());
-        buttons.addView(export, new LinearLayout.LayoutParams(0, -2, 1)); buttons.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
+        buttons.addView(selectFolder, new LinearLayout.LayoutParams(0, -2, 1));
+        buttons.addView(export, new LinearLayout.LayoutParams(0, -2, 1));
+        buttons.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
         panel.addView(buttons);
         Button recreateSurface = new Button(this); recreateSurface.setText("RECREATE ACTIVITY / SURFACE");
         recreateSurface.setOnClickListener(v -> recreateActivityForSurfaceTest());
@@ -101,6 +127,9 @@ public final class ProbeActivity extends SDLActivity {
             int identity = System.identityHashCode(surface);
             if (identity != recordedSurfaceIdentity) {
                 recordedSurfaceIdentity = identity;
+                appendBreadcrumb("ANDROID_SURFACE_CALLBACK_THREAD_ID",
+                        "callback=created java_tid=" + Thread.currentThread().getId() +
+                                " identity=" + identity);
                 appendBreadcrumb("ANDROID_SURFACE_CREATED", "identity=" + identity);
                 nativeAndroidSurfaceCreated(identity);
             }
@@ -122,30 +151,97 @@ public final class ProbeActivity extends SDLActivity {
     }
     private String getCombinedReport() {
         return nativeGetReport() + "\nPREVIOUS_PROCESS_EXIT_REASON: " + previousProcessExitReason
+                + "\nAPPLICATION_EXIT_TRACE: " + applicationExitTraceStatus
                 + "\n\nPREVIOUS SESSION LIFECYCLE TRACE\n" + getPersistentTrace();
     }
     private void copyReport() {
         android.content.ClipboardManager clipboard = (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
         clipboard.setPrimaryClip(ClipData.newPlainText("Project 8 probe report", getCombinedReport()));
     }
-    private void exportLog() {
-        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT); intent.setType("text/plain");
-        intent.putExtra(Intent.EXTRA_TITLE, "probe.log"); startActivityForResult(intent, CREATE_LOG);
+    private void selectLogFolder() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION |
+                Intent.FLAG_GRANT_WRITE_URI_PERMISSION |
+                Intent.FLAG_GRANT_PREFIX_URI_PERMISSION |
+                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        startActivityForResult(intent, SELECT_LOG_FOLDER);
+    }
+    private void exportDiagnostics() {
+        String tree = getSharedPreferences(DIAGNOSTIC_PREFS, MODE_PRIVATE)
+                .getString(LOG_TREE_KEY, "");
+        if (tree.isEmpty()) {
+            Toast.makeText(this, "Select a log folder first", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        final String timestamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date());
+        new Thread(() -> {
+            byte[] exitTrace = captureApplicationExitTrace();
+            String diagnostics = nativeGetLog() + "\n\nCURRENT REPORT\n" + getCombinedReport();
+            exportDiagnosticsToTree(Uri.parse(tree), timestamp, diagnostics, exitTrace);
+        }, "Stage5DiagnosticExport").start();
+    }
+    private void exportDiagnosticsToTree(Uri treeUri, String timestamp, String diagnostics,
+                                         byte[] exitTrace) {
+        try {
+            Uri parent = DocumentsContract.buildDocumentUriUsingTree(
+                    treeUri, DocumentsContract.getTreeDocumentId(treeUri));
+            Uri log = DocumentsContract.createDocument(getContentResolver(), parent, "text/plain",
+                    "Project8Stage5-" + timestamp + ".log");
+            if (log == null) {
+                throw new IllegalStateException("document provider did not create the log");
+            }
+            try (OutputStream out = getContentResolver().openOutputStream(log, "w")) {
+                if (out == null) throw new IllegalStateException("log output stream unavailable");
+                out.write(diagnostics.getBytes(StandardCharsets.UTF_8));
+            }
+            if (exitTrace != null && exitTrace.length != 0) {
+                Uri raw = DocumentsContract.createDocument(getContentResolver(), parent,
+                        "application/octet-stream",
+                        "Project8Stage5-native-crash-" + timestamp + ".pb");
+                if (raw != null) {
+                    try (OutputStream out = getContentResolver().openOutputStream(raw, "w")) {
+                        if (out != null) out.write(exitTrace);
+                    }
+                }
+            }
+            handler.post(() -> Toast.makeText(this, "Diagnostics exported", Toast.LENGTH_SHORT).show());
+        } catch (Exception exception) {
+            appendBreadcrumb("DIAGNOSTIC_EXPORT_FAILED",
+                    exception.getClass().getName() + ": " + exception.getMessage());
+            handler.post(() -> Toast.makeText(this, "Diagnostic export failed", Toast.LENGTH_LONG).show());
+        }
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
-        if (request == CREATE_LOG && result == Activity.RESULT_OK && data != null) {
-            try (OutputStream out = getContentResolver().openOutputStream(data.getData())) {
-                out.write((nativeGetLog() + "\n\n" + getCombinedReport()).getBytes(StandardCharsets.UTF_8));
-            } catch (Exception ignored) { }
+        if (request == SELECT_LOG_FOLDER && result == Activity.RESULT_OK && data != null &&
+                data.getData() != null) {
+            Uri tree = data.getData();
+            int flags = data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION |
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            try {
+                getContentResolver().takePersistableUriPermission(tree, flags);
+                getSharedPreferences(DIAGNOSTIC_PREFS, MODE_PRIVATE).edit()
+                        .putString(LOG_TREE_KEY, tree.toString()).commit();
+                appendBreadcrumb("LOG_FOLDER_SELECTED", "uri=" + tree);
+            } catch (RuntimeException exception) {
+                appendBreadcrumb("LOG_FOLDER_SELECTION_FAILED",
+                        exception.getClass().getName() + ": " + exception.getMessage());
+            }
         }
     }
     @Override protected void onDestroy() {
         appendBreadcrumb("ACTIVITY_ON_DESTROY_ENTER", staticSDLState());
         appendBreadcrumb("SDL_NATIVE_THREAD_STOP_REQUEST", staticSDLState());
+        Thread generationThread = mSDLThread;
+        appendBreadcrumb("SDL_THREAD_JOIN_BEGIN", threadState(generationThread));
         handler.removeCallbacks(refresh);
         nativeActivityDestroyed();
         super.onDestroy();
+        if (generationThread != null && generationThread.isAlive()) {
+            appendBreadcrumb("SDL_THREAD_JOIN_TIMEOUT", threadState(generationThread));
+        } else {
+            appendBreadcrumb("SDL_THREAD_JOIN_END", threadState(generationThread));
+        }
         appendBreadcrumb("ACTIVITY_ON_DESTROY_EXIT", staticSDLState());
     }
 
@@ -170,8 +266,15 @@ public final class ProbeActivity extends SDLActivity {
     }
 
     public static void appendNativeLifecycleBreadcrumb(String event, long handle) {
-        String detail = handle == 0 ? "" : "handle=0x" + Long.toHexString(handle);
+        String detail = "java_tid=" + Thread.currentThread().getId() +
+                (handle == 0 ? "" : " handle=0x" + Long.toHexString(handle));
         appendBreadcrumb(event, detail);
+    }
+
+    public static void appendNativeSurfaceThreadBreadcrumb(String event, long handle,
+                                                            long nativeThreadId) {
+        appendBreadcrumb(event, "native_tid=" + nativeThreadId +
+                (handle == 0 ? "" : " handle=0x" + Long.toHexString(handle)));
     }
 
     private static synchronized void initializePersistentDiagnostics(android.content.Context context) {
@@ -225,6 +328,12 @@ public final class ProbeActivity extends SDLActivity {
                 " main_finished=" + mSDLMainFinished;
     }
 
+    private static String threadState(Thread thread) {
+        return "thread=" + (thread == null ? "null" : thread.getState().name()) +
+                " alive=" + (thread != null && thread.isAlive()) +
+                " java_tid=" + (thread == null ? 0 : thread.getId());
+    }
+
     private static String queryPreviousProcessExitReason() {
         if (Build.VERSION.SDK_INT < 30) {
             return "UNAVAILABLE_API_LT_30";
@@ -237,12 +346,51 @@ public final class ProbeActivity extends SDLActivity {
                 return "NONE";
             }
             ApplicationExitInfo exit = exits.get(0);
+            previousExitInfo = exit;
+            applicationExitTraceStatus = Build.VERSION.SDK_INT >= 31 &&
+                    exit.getReason() == ApplicationExitInfo.REASON_CRASH_NATIVE
+                    ? "NOT QUERIED (export diagnostics to read)" : "NOT AVAILABLE";
             return "reason=" + exitReasonName(exit.getReason()) + "(" + exit.getReason() + ")" +
                     " status=" + exit.getStatus() + " timestamp=" + exit.getTimestamp() +
                     " description=" + String.valueOf(exit.getDescription());
         } catch (RuntimeException exception) {
             return "QUERY_FAILED " + exception.getClass().getName() + ": " + exception.getMessage();
         }
+    }
+
+    private static synchronized byte[] captureApplicationExitTrace() {
+        ApplicationExitInfo exit = previousExitInfo;
+        previousApplicationExitTrace = null;
+        if (Build.VERSION.SDK_INT < 31 || exit == null ||
+                exit.getReason() != ApplicationExitInfo.REASON_CRASH_NATIVE) {
+            applicationExitTraceStatus = "NOT AVAILABLE";
+            return null;
+        }
+        try (InputStream input = exit.getTraceInputStream()) {
+            if (input == null) {
+                applicationExitTraceStatus = "NOT AVAILABLE";
+                return null;
+            }
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            byte[] buffer = new byte[16384];
+            int total = 0;
+            while (total < MAX_EXIT_TRACE_BYTES) {
+                int count = input.read(buffer, 0,
+                        Math.min(buffer.length, MAX_EXIT_TRACE_BYTES - total));
+                if (count < 0) break;
+                output.write(buffer, 0, count);
+                total += count;
+            }
+            previousApplicationExitTrace = output.toByteArray();
+            applicationExitTraceStatus = previousApplicationExitTrace.length == 0
+                    ? "NOT AVAILABLE"
+                    : "AVAILABLE bytes=" + previousApplicationExitTrace.length +
+                            " format=ANDROID_TOMBSTONE_PROTOBUF";
+        } catch (Exception exception) {
+            applicationExitTraceStatus = "NOT AVAILABLE (" +
+                    exception.getClass().getSimpleName() + ")";
+        }
+        return previousApplicationExitTrace;
     }
 
     private static String exitReasonName(int reason) {

@@ -12,3 +12,4 @@
 0012-android-content-file-descriptor.patch
 0013-android-presentation-diagnostic-callback.patch
 0014-android-lifecycle-diagnostics.patch
+0015-sdl-android-recreate-thread-barrier.patch

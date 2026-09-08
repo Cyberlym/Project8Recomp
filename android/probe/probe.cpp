@@ -343,6 +343,37 @@ void PersistentLifecycleBreadcrumb(const char* event, uintptr_t handle = 0) {
   env->DeleteLocalRef(activity);
 }
 
+void PersistentSurfaceThreadBreadcrumb(const char* event, uintptr_t handle) {
+  auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+  auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
+  if (!env || !activity) {
+    return;
+  }
+  jclass activity_class = env->GetObjectClass(activity);
+  jmethodID append_method = activity_class
+                                ? env->GetStaticMethodID(
+                                      activity_class,
+                                      "appendNativeSurfaceThreadBreadcrumb",
+                                      "(Ljava/lang/String;JJ)V")
+                                : nullptr;
+  jstring event_string = append_method ? env->NewStringUTF(event) : nullptr;
+  if (append_method && event_string) {
+    env->CallStaticVoidMethod(activity_class, append_method, event_string,
+                              static_cast<jlong>(handle),
+                              static_cast<jlong>(SDL_GetCurrentThreadID()));
+  }
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+  }
+  if (event_string) {
+    env->DeleteLocalRef(event_string);
+  }
+  if (activity_class) {
+    env->DeleteLocalRef(activity_class);
+  }
+  env->DeleteLocalRef(activity);
+}
+
 bool SDLCALL LifecycleEventWatch(void*, SDL_Event* event) {
   std::lock_guard<std::mutex> lock(g_state_mutex);
   switch (event->type) {
@@ -492,6 +523,7 @@ int RunProbe() {
   provider.reset();
   CloseLog();
   PersistentLifecycleBreadcrumb("SDL_NATIVE_THREAD_STOPPED");
+  PersistentLifecycleBreadcrumb("SDL_MAIN_FINISHED_TRUE");
   return loop_result;
 }
 
@@ -500,6 +532,17 @@ int RunProbe() {
 extern "C" void rexglue_android_presentation_diagnostic(
     rex::ui::AndroidPresentationDiagnosticEvent event, int32_t result, uintptr_t handle,
     uint32_t width, uint32_t height) {
+  switch (event) {
+    case rex::ui::AndroidPresentationDiagnosticEvent::kSurfaceCreated:
+    case rex::ui::AndroidPresentationDiagnosticEvent::kSurfaceDestroyed:
+      PersistentSurfaceThreadBreadcrumb("REXUI_SURFACE_CALLBACK_THREAD_ID", handle);
+      break;
+    case rex::ui::AndroidPresentationDiagnosticEvent::kVulkanSurfaceDestroyed:
+      PersistentSurfaceThreadBreadcrumb("VK_SURFACE_DESTROY_THREAD_ID", handle);
+      break;
+    default:
+      break;
+  }
   {
     std::lock_guard<std::mutex> lock(g_state_mutex);
     switch (event) {

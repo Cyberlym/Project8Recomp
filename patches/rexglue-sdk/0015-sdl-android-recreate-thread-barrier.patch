@@ -1,0 +1,50 @@
+diff --git a/thirdparty/sdl3/android-project/app/src/main/java/org/libsdl/app/SDLActivity.java b/thirdparty/sdl3/android-project/app/src/main/java/org/libsdl/app/SDLActivity.java
+index 16524a1..d5d9c4f 100644
+--- a/thirdparty/sdl3/android-project/app/src/main/java/org/libsdl/app/SDLActivity.java
++++ b/thirdparty/sdl3/android-project/app/src/main/java/org/libsdl/app/SDLActivity.java
+@@ -674,19 +674,37 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
+         }
+ 
+         if (SDLActivity.mSDLThread != null) {
++            Thread sdlThread = SDLActivity.mSDLThread;
+ 
+             // Send Quit event to "SDLThread" thread
+             SDLActivity.nativeSendQuit();
+ 
+             // Wait for "SDLThread" thread to end
+-            try {
+-                // Use a timeout because:
+-                // C SDLmain() thread might have started (mSDLThread.start() called)
+-                // while the SDL_Init() might not have been called yet,
+-                // and so the previous QUIT event will be discarded by SDL_Init() and app is running, not exiting.
+-                SDLActivity.mSDLThread.join(1000);
+-            } catch(Exception e) {
+-                Log.v(TAG, "Problem stopping SDLThread: " + e);
++            if (SDLActivity.nativeAllowRecreateActivity()) {
++                // Java and native state are process-global. A replacement Activity must
++                // not reset them or start SDL_main while this generation is still using
++                // them, and nativeQuit below must not destroy its synchronization objects.
++                boolean interrupted = false;
++                while (sdlThread.isAlive()) {
++                    try {
++                        sdlThread.join();
++                    } catch (InterruptedException e) {
++                        interrupted = true;
++                    }
++                }
++                if (interrupted) {
++                    Thread.currentThread().interrupt();
++                }
++            } else {
++                try {
++                    // Use a timeout because:
++                    // C SDLmain() thread might have started (mSDLThread.start() called)
++                    // while the SDL_Init() might not have been called yet,
++                    // and so the previous QUIT event will be discarded by SDL_Init() and app is running, not exiting.
++                    sdlThread.join(1000);
++                } catch(Exception e) {
++                    Log.v(TAG, "Problem stopping SDLThread: " + e);
++                }
+             }
+         }
+         SDLActivity.nativeQuit();
