@@ -29,6 +29,7 @@
 #endif
 
 #include <rex/cvar.h>
+#include <rex/graphics/project8_draw_capture.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
 
@@ -323,6 +324,9 @@ REX_HOOK_RAW(sub_82354BE0) {
     }
 
     __imp__sub_82354BE0(ctx, base);
+    rex::graphics::RecordProject8VertexPreparation(
+        {source, destination, static_cast<uint32_t>(thps::vertex_unpack::kInputSize),
+         static_cast<uint32_t>(thps::vertex_unpack::kOutputSize)});
 
     if (verify) {
       auto candidate = before;
@@ -400,6 +404,9 @@ REX_HOOK_RAW(sub_82354BE0) {
       {source, destination, static_cast<uint32_t>(thps::vertex_unpack::kInputSize),
        static_cast<uint32_t>(thps::vertex_unpack::kOutputSize)},
       static_cast<uint64_t>(native_elapsed));
+  rex::graphics::RecordProject8VertexPreparation(
+      {source, destination, static_cast<uint32_t>(thps::vertex_unpack::kInputSize),
+       static_cast<uint32_t>(thps::vertex_unpack::kOutputSize)});
   ctx.r3.u64 = std::rotl(REX_LOAD_U32(source + 248), 7) & 0x3;
   ctx.fpscr.enableFlushMode();
 

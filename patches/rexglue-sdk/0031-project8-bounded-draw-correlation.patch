@@ -1,0 +1,156 @@
+diff --git a/include/rex/graphics/project8_draw_capture.h b/include/rex/graphics/project8_draw_capture.h
+new file mode 100644
+--- /dev/null
++++ b/include/rex/graphics/project8_draw_capture.h
+@@ -0,0 +1,18 @@
++#pragma once
++#include <cstdint>
++namespace rex::graphics {
++struct Project8VertexPreparation { uint32_t source_address, destination_address, source_bytes, destination_bytes; };
++// Final draw facts only; no guest bytes, texture keys or resource contents.
++struct Project8DrawMetadata {
++  uint32_t primitive, guest_vertices, host_vertices, vertex_address, vertex_size, vertex_stride_words;
++  uint32_t index_type, index_format, index_address, index_bytes;
++  uint64_t vs_hash, ps_hash;
++  uint32_t textures, render_target, depth_control, blend_control;
++  float viewport[4];
++};
++void BeginProject8DrawCorrelation(uint64_t guest_swap_ordinal);
++void EndProject8DrawCorrelation(uint64_t guest_swap_ordinal);
++bool IsProject8DrawCorrelationActive();
++void RecordProject8VertexPreparation(const Project8VertexPreparation& record);
++void RecordProject8DrawMetadata(const Project8DrawMetadata& record);
++}  // namespace rex::graphics
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -16,6 +16,7 @@ add_library(rexcore OBJECT
+     memory.cpp
+     mutex.cpp
+     ring_buffer.cpp
++    project8_draw_capture.cpp
+     sha256.cpp
+     string_buffer.cpp
+     threading.cpp
+diff --git a/src/core/project8_draw_capture.cpp b/src/core/project8_draw_capture.cpp
+new file mode 100644
+--- /dev/null
++++ b/src/core/project8_draw_capture.cpp
+@@ -0,0 +1,60 @@
++#include <rex/graphics/project8_draw_capture.h>
++#include <array>
++#include <atomic>
++#include <mutex>
++#include <rex/logging.h>
++namespace rex::graphics { namespace {
++constexpr uint32_t kMaximumPreparations = 8, kMaximumDraws = 8;
++std::atomic<bool> active{false};
++std::atomic<uint64_t> opening_swap{0};
++std::atomic<uint32_t> preparation_count{0}, draw_count{0};
++std::array<Project8VertexPreparation, kMaximumPreparations> preparations{};
++std::array<Project8DrawMetadata, kMaximumDraws> draws{};
++std::mutex records_mutex;
++}  // namespace
++void BeginProject8DrawCorrelation(uint64_t swap) {
++  std::lock_guard<std::mutex> lock(records_mutex);
++  preparation_count.store(0, std::memory_order_relaxed);
++  draw_count.store(0, std::memory_order_relaxed);
++  opening_swap.store(swap, std::memory_order_relaxed);
++  active.store(true, std::memory_order_release);
++}
++void EndProject8DrawCorrelation(uint64_t swap) {
++  if (!active.exchange(false, std::memory_order_acq_rel)) return;
++  std::lock_guard<std::mutex> lock(records_mutex);
++  const uint32_t preps = preparation_count.load(std::memory_order_acquire);
++  const uint32_t draw_total = draw_count.load(std::memory_order_acquire);
++  REXLOG_INFO("P8_DRAW_CORRELATION swap_open={} swap_close={} preps={} draws={}{}{}",
++              opening_swap.load(std::memory_order_relaxed), swap, preps, draw_total,
++              preps > kMaximumPreparations ? " preps_truncated=1" : "",
++              draw_total > kMaximumDraws ? " draws_truncated=1" : "");
++  for (uint32_t i = 0; i < preps && i < kMaximumPreparations; ++i) {
++    const auto& r = preparations[i];
++    REXLOG_INFO("P8_DRAW_CORRELATION prep={} source={:08X} destination={:08X} input={} output={}",
++                i, r.source_address, r.destination_address, r.source_bytes, r.destination_bytes);
++  }
++  for (uint32_t i = 0; i < draw_total && i < kMaximumDraws; ++i) {
++    const auto& r = draws[i];
++    REXLOG_INFO("P8_DRAW_CORRELATION draw={} primitive={} vertices={}/{} vertex={:08X}+{} stride={} index=type:{} format:{} {:08X}+{} vs={:016X} ps={:016X} textures={:08X} rt={:08X} depth={:08X} blend={:08X} viewport={},{},{},{}",
++                i, r.primitive, r.guest_vertices, r.host_vertices, r.vertex_address, r.vertex_size,
++                r.vertex_stride_words, r.index_type, r.index_format, r.index_address, r.index_bytes,
++                r.vs_hash, r.ps_hash, r.textures, r.render_target, r.depth_control, r.blend_control,
++                r.viewport[0], r.viewport[1], r.viewport[2], r.viewport[3]);
++  }
++}
++bool IsProject8DrawCorrelationActive() { return active.load(std::memory_order_acquire); }
++void RecordProject8VertexPreparation(const Project8VertexPreparation& r) {
++  if (!active.load(std::memory_order_acquire)) return;
++  std::lock_guard<std::mutex> lock(records_mutex);
++  if (!active.load(std::memory_order_relaxed)) return;
++  const uint32_t i = preparation_count.fetch_add(1, std::memory_order_relaxed);
++  if (i < kMaximumPreparations) preparations[i] = r;
++}
++void RecordProject8DrawMetadata(const Project8DrawMetadata& r) {
++  if (!active.load(std::memory_order_acquire)) return;
++  std::lock_guard<std::mutex> lock(records_mutex);
++  if (!active.load(std::memory_order_relaxed)) return;
++  const uint32_t i = draw_count.fetch_add(1, std::memory_order_relaxed);
++  if (i < kMaximumDraws) draws[i] = r;
++}
++}  // namespace rex::graphics
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -34,5 +34,6 @@
+ #include <rex/graphics/util/draw.h>
+ #include <rex/graphics/flags.h>
++#include <rex/graphics/project8_draw_capture.h>
+ #include <rex/graphics/pipeline/shader/shader.h>
+ #include <rex/graphics/pipeline/shader/spirv_translator.h>
+ #include <rex/graphics/registers.h>
+@@ -81,5 +82,10 @@ REXCVAR_DEFINE_BOOL(vulkan_readback_memexport, false, "GPU/Vulkan",
+                     "Read data written by memory export in shaders on the CPU")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
++#if REX_PLATFORM_ANDROID
++REXCVAR_DEFINE_BOOL(p8_android_draw_correlation_capture, false, "Project8/Android",
++                    "Correlate one bounded draw-census frame with Project 8 vertex preparation metadata.")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++#endif
+ 
+ REXCVAR_DEFINE_BOOL(vulkan_async_skip_incomplete_frames, true, "GPU/Vulkan",
+                     "When async shader compilation is enabled, skip presenting frames that "
+@@ -2423,4 +2429,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+     if (!draw_census_) {
+       draw_census_ = std::make_unique<draw_census::Recorder>();
+     }
++    if (rex::graphics::IsProject8DrawCorrelationActive()) {
++      rex::graphics::EndProject8DrawCorrelation(draw_census_swap_ordinal_);
++    }
+     uint32_t census_mode_flags = 0;
+@@ -2445,6 +2454,11 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+         GetCurrentFrame(), GetCurrentSubmission(), census_mode_flags,
+         rex::perf::GetSnapshotCounter(rex::perf::CounterId::kDrawCalls));
+     if (census_started) {
++#if REX_PLATFORM_ANDROID
++      if (REXCVAR_GET(p8_android_draw_correlation_capture)) {
++        rex::graphics::BeginProject8DrawCorrelation(draw_census_swap_ordinal_);
++      }
++#endif
+       std::memset(draw_census_float_dirty_, 0, sizeof(draw_census_float_dirty_));
+       std::memset(draw_census_fetch_dirty_, 0, sizeof(draw_census_fetch_dirty_));
+       draw_census_boolloop_dirty_writes_ = 0;
+@@ -4620,5 +4632,15 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+       }
+     }
++    const draw_census::VertexBindingRecord& p8_vertex = census_draw.vertex_bindings[0];
++    rex::graphics::RecordProject8DrawMetadata({
++        census_draw.guest_prim_type, census_draw.guest_vertex_count, census_draw.host_vertex_count,
++        p8_vertex.address_bytes, p8_vertex.size_bytes, p8_vertex.stride_words,
++        census_draw.index_buffer_type, census_draw.index_format, census_draw.guest_index_base,
++        census_draw.guest_index_bytes, census_draw.vs_hash, census_draw.ps_hash,
++        census_draw.used_texture_mask, census_draw.rb_color_info[0],
++        census_draw.rb_depthcontrol_normalized, census_draw.rb_blendcontrol[0],
++        {census_draw.vp_xy_offset[0], census_draw.vp_xy_offset[1], census_draw.vp_xy_extent[0], census_draw.vp_xy_extent[1]},
++    });
+ 
+     const bool recorded = census->RecordDraw(census_draw);
+     census_attempt.Commit();

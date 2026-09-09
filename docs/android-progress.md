@@ -1904,3 +1904,28 @@ Stage 9E Project8 Native Renderer — **IMPLEMENTATION STARTED**.
   vertex/index/transform/material/texture/pass e implementar o primeiro
   Native GPU Draw com fallback Xenos.
 - Esta branch não é BUILD VERIFIED nem DEVICE VERIFIED.
+
+### 9E — correlação limitada de draw preparada (sem build)
+
+O rastreio estático de `sub_82354BE0` fecha somente que ele converte um registro
+de atributos de 252 para 496 bytes. Não há caller, submissão, índice, matriz,
+material ou pass comprovados no código versionado, portanto esse registro não é
+tratado como uma malha nem é suprimido.
+
+O `draw_census` já presente no plugin é o oráculo do estado final do
+`IssueDraw`: para uma janela limitada ele registra primitive, índice, vertex
+fetch, hashes de VS/PS, texturas usadas, render-pass/RT, viewport, depth e
+blend sem copiar bytes de assets. O patch `0031` acrescenta uma correlação
+Project-8-specific opt-in: com `p8_android_draw_correlation_capture=true` e
+uma única execução de `gpu_census_capture`, ele abre e fecha a mesma janela
+`XE_SWAP`, coleta no máximo 8 pares source/destination/tamanho de
+`sub_82354BE0` e no máximo 8 draws, emitindo linhas `P8_DRAW_CORRELATION` só no
+fechamento da janela. O log e o arquivo
+`.dcen` compartilham os ordinais de swap; endereços de destination podem então
+ser comparados aos vertex fetches, sem dump de conteúdo. A associação
+CPU-preparation/guest-frame ainda deve ser validada no aparelho antes de ser
+tratada como uma associação draw-a-draw.
+
+**NATIVE GPU DRAW: NO.** O blocker exato continua sendo a correlação runtime de
+um candidato com contrato completo. Nenhum draw Xenos foi suprimido; o fallback
+permanece integral.
