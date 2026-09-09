@@ -84,6 +84,7 @@ add_library(main SHARED
   android_game_install.cpp
   android_gameplay_log.cpp
   android_game_app.cpp
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../src/game/src/project8_native_scene.cpp"
   "${REXGLUE_SDK_ROOT}/src/ui/rex_app.cpp"
   game_image_jni.cpp
   "${CMAKE_CURRENT_SOURCE_DIR}/../../src/common/game_image_reader.cpp"

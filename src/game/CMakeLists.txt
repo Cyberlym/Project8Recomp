@@ -45,6 +45,7 @@ endif()
 # Sources
 set(THPSP8_SOURCES
     src/main.cpp
+    src/project8_native_scene.cpp
 )
 
 # Windows only. Supplies the C23 math functions the UCRT lacks but that clang
@@ -70,6 +71,7 @@ set(THPSP8_HEADERS
     src/guest_swap_wait.h
     src/guest_u8x4_unpack.h
     src/guest_vertex_unpack.h
+    src/project8_native_scene.h
     ../common/supported_dumps.h
     src/native_indicator.h
     src/parity_capture.h

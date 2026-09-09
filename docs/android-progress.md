@@ -1734,3 +1734,173 @@ O checkpoint inclui o código-fonte Android, installer XDVDFS, integração
 `HostPathDevice`, runtime/plugin ARM64, patches reproduzíveis do ReXGlue e a
 infraestrutura de build necessária. Conteúdo do jogo, código gerado a partir do
 XEX, APKs, bibliotecas nativas, caches e logs permanecem fora do Git.
+
+## Stage 9 — STARTED
+
+Stage 8 permanece **COMPLETE / DEVICE VERIFIED** e seus caminhos de SAF,
+instalação XDVDFS, `game-installing/`, `game/`, validação e `HostPathDevice`
+estão protegidos. Esta rodada foi somente uma auditoria estática do runtime e
+renderer; não houve build, codegen, APK ou mudança nesses caminhos.
+
+### 9A — Renderer/runtime audit
+
+Project 8 recompila o PPC do jogo para C++/ARM64 em `libmain.so`, mas seu GPU
+permanece genérico: `AndroidThpsP8App` exige `gpu_plugin=xenos`,
+`librexgpu-xenos.so` cria `VulkanGraphicsSystem`, e `VulkanCommandProcessor`
+interpreta comandos Xenos, traduz shaders/pipeline/EDRAM para Vulkan e entrega
+a imagem ao presenter SDL/Vulkan. Não existe `NativeGuestRenderer` nem renderer
+Project-8-specific no checkpoint atual; `rexgpu-xenos` não é fallback.
+
+Skate usa o mesmo runtime/recompilação e ainda conserva caminhos Xenos para
+trabalho não substituído, mas possui renderer específico: captura estados do
+jogo em hooks, publica a cena e a desenha com `NativeGuestOutputRenderContext`
+e `native_rhi` em Vulkan/D3D12, suprimindo draws emulados de tamanho de
+framebuffer quando sua saída nativa está ativa. Isso é uma referência de
+arquitetura, não código a copiar: Project 8 precisaria descobrir seus próprios
+hooks, formatos, passes e contratos de recursos.
+
+### 9B — Shader/pipeline/presentation P0
+
+Evidência estática fecha a primeira causa: Project 8 não sobrescrevia os
+defaults ReXGlue `async_shader_compilation=true` e
+`vulkan_async_skip_incomplete_frames=true`. Em um miss,
+`VulkanPipelineCache` cria pipeline placeholder e agenda o real; se algum draw
+do frame o usar, `VulkanCommandProcessor` descarta a apresentação e exibe a
+imagem anterior. Isto corresponde diretamente aos logs físicos de dezenas de
+frames pulados. O armazenamento persistente de shaders já é habilitado por
+`store_shaders=true`, usa o cache privado Android e é inicializado antes do
+módulo para o Title ID. Ele persiste shaders Xenos e descrições de pipeline,
+mas não um `VkPipelineCache` binário do driver: a criação host atual chama
+`vkCreateGraphicsPipelines` com cache Vulkan nulo. Assim, o cache evita
+redescoberta/retradução, não a criação de todos os pipelines Vulkan em um novo
+processo.
+
+A primeira correção preparada, Android-only e reversível, define
+`async_shader_compilation=false` e
+`vulkan_async_skip_incomplete_frames=false` em `OnPreSetup`, antes de carregar
+o plugin. Ela troca frames descartados por stutter de primeira compilação; o
+store persistente deve reduzir esse custo em sessões posteriores. Requer build
+e teste físico antes de qualquer conclusão de performance.
+
+### 9C–9H — próximos eixos
+
+`VulkanTextureCache` consulta capabilities por formato e pode escolher fallback
+de formato host; a mensagem sozinha não prova erro, pois há fallbacks
+semanticamente planejados. Imagem lavada/azulada em gameplay permanece hipótese
+prioritária para formatos de render target, resolve/EDRAM, canais/sRGB ou
+shader de passes de mundo, pois menus funcionam melhor. A próxima instrumentação
+deve correlacionar os fallbacks e o caminho de render target com um frame de
+gameplay, antes de qualquer decompression CPU ou alteração de formato.
+
+O buffer de memória compartilhada é 512 MiB quando sparse binding não é usado.
+O código tenta sparse somente se a cvar está ligada e a GPU anuncia
+`sparseResidencyBuffer`; sem um capability capture da Adreno 619 não há base
+para habilitar, alterar ou atribuir custo dominante a esse caminho.
+
+9A — Renderer/runtime audit: concluída estaticamente.
+9B — Shader/pipeline/presentation P0: correção preparada, build/device test pendente.
+9C — Rendering correctness: pendente de captura orientada por pass/formato.
+9D — Mobile Vulkan/runtime optimization: pendente de perfil/capabilities.
+9E — Project8 Native Renderer feasibility: estudo iniciado; alto custo e exige
+    descoberta Project-8-specific antes de qualquer substituição.
+9F — Performance validation: pendente.
+9G — Graphics presets: posterior.
+9H — AdrenoTools future: posterior.
+
+### 9B — P0 implementation e medição de apresentação (sem build)
+
+O Android agora força, antes de carregar `rexgpu-xenos`,
+`async_shader_compilation=false` e
+`vulkan_async_skip_incomplete_frames=false`. `store_shaders` não foi alterado.
+O patch novo `0029-android-vulkan-presentation-performance.patch` acrescenta
+somente no Android contadores atômicos de lifetime: present Vulkan bem-sucedido,
+skip por placeholder, criação de pipeline gráfico, tradução de shader,
+hit/miss de descrição de pipeline e recriação de swapchain. O present é contado
+somente após `vkQueuePresentKHR` retornar `VK_SUCCESS` ou `VK_SUBOPTIMAL_KHR`;
+outdated, surface loss, falha e skip não entram.
+
+No APK debug, `GameplayActivity` adiciona um `TextView` pass-through discreto
+acima da surface SDL. Ele consulta um snapshot nativo quatro vezes por segundo,
+sem JNI por frame, e mostra FPS de uma janela móvel de presents reais e
+frametime pelo intervalo entre presents. Se nenhum present novo ocorrer, o
+frametime envelhece a partir do último timestamp nativo, portanto uma imagem
+congelada não mantém uma leitura antiga de 60 FPS. O mesmo snapshot produz um
+resumo `P8_PERF` a cada cinco segundos; não há log por draw ou frame.
+
+`shader_cache_hit/miss` permanece indisponível: o runtime expõe traduções e
+descrições persistidas, mas não uma atribuição confiável de hit/miss do storage
+por shader. O contador de descrição mede buscas no cache de descrições do
+processo, inclusive entradas carregadas do storage; criação de pipeline e
+tradução são contadas somente após sucesso.
+
+### 9E — primeiro candidato Project8-specific (estudo, não implementado)
+
+O primeiro candidato comprovado é a preparação de vértice
+`sub_82354BE0`, já encapsulada em `guest_vertex_unpack.h`: transforma um
+registro de 252 bytes em um registro render-side de 496 bytes e possui hook,
+feature flag desligada e fallback imediato para `__imp__sub_82354BE0`. Não é
+ainda um pass Vulkan nativo e não requer shaders; é um ponto de entrada seguro
+para medir trabalho de preparação de mesh ARM64 antes de capturar listas,
+materiais e texturas. Uma variante ARM64/NEON só pode ser considerada depois de
+verificação byte-a-byte do caminho existente e perfil em aparelho. Não há
+evidência versionada suficiente para declarar um pass world/RT/hud específico
+como substituível nesta etapa.
+
+Nenhum caminho protegido da Stage 8, lifecycle SDL, ownership de window/surface,
+orientação, input ou configuração gráfica foi alterado. Build e teste físico
+continuam pendentes para Luna.
+
+### Stage 9C–9E — política do plugin, correctness e fundação nativa (sem build)
+
+O teste físico invalidou a primeira colocação do P0: `OnPreSetup` antecede o
+carregamento de `rexgpu-xenos`, portanto `SetFlagByName` não podia confirmar
+nem forçar CVars que ainda não estavam registrados. O patch `0030` move os
+defaults Android para as declarações que vivem no plugin: async shader e skip
+de frames incompletos começam como `false` no próprio backend. No primeiro
+`IssueSwap`, o backend registra uma única linha `P8_GPU_CONFIG` com os valores
+efetivos, incluindo `store_shaders` e a opção de occlusion.
+
+O contador visual deixa de usar `vkQueuePresentKHR` como FPS. A série mostrada
+é o timestamp monotônico de cada pacote guest `XE_SWAP`, antes de `IssueSwap`;
+o present permanece somente no resumo técnico. Uma janela nativa de até um
+segundo calcula FPS e frametime com os mesmos timestamps; sem swaps novos ela
+fica vazia e FPS cai para zero. Isso é um boundary comprovado do swap final
+Xenos do guest, mas ainda requer teste físico para provar a relação um-para-um
+com o frame lógico de Project 8. `P8_PERF2` inclui frames guest,
+presents, skips, draws Xenos, submits de fila, queries de oclusão e preparação
+nativa.
+
+Como A/B de world pop-in, `p8_android_occlusion_query_enable` mantém queries
+host ativas por padrão, mas pode desligá-las só no Android. O caminho Vulkan
+de queries atualmente executa `VK_QUERY_RESULT_WAIT_BIT` e em seguida espera
+operações da fila, portanto é uma hipótese concreta tanto para visibilidade
+quanto para stall; não é declarado fix antes do teste.
+
+9E agora tem fundação real, porém híbrida: `project8_native_scene` é uma
+captura metadata-only de preparação de vértice e `sub_82354BE0` passa pelo
+caminho ARM64 exato somente quando `project8_native_renderer_enable` e
+`guest_vertex_unpack_native` estão ligados. Ela mede input/output comprovados
+(252 -> 496 bytes) sem reter ponteiros guest. O fallback é o corpo recompilado
+`__imp__sub_82354BE0`; `rexgpu-xenos` continua responsável por todos os draws,
+RTTs e presenter. Não existe ainda draw Vulkan nativo, shader nativo ou
+substituição de mesh/material: estes exigem um contrato Project-8-specific
+descoberto e validado em aparelho.
+
+Stage 9B async fix — **DEVICE FAILED / new implementation prepared**.
+Stage 9C rendering correctness — **active**.
+Stage 9D mobile Vulkan optimization — **active**.
+Stage 9E Project8 Native Renderer — **IMPLEMENTATION STARTED**.
+
+## Stage 9 — WORK IN PROGRESS
+
+- O teste físico do async anterior falhou; a nova política local do
+  `rexgpu-xenos` está preparada, mas ainda não foi testada no device.
+- O GAME FPS baseado no candidato `XE_SWAP` está preparado, mas ainda não é
+  DEVICE VERIFIED.
+- O A/B de occlusion query está preparado.
+- Existe fundação de `Native Scene` e preparação nativa de CPU.
+- **NATIVE GPU DRAW: NO**; `rexgpu-xenos` ainda executa todos os draws reais.
+- Próximo objetivo: correlacionar um draw real do Project 8 com
+  vertex/index/transform/material/texture/pass e implementar o primeiro
+  Native GPU Draw com fallback Xenos.
+- Esta branch não é BUILD VERIFIED nem DEVICE VERIFIED.

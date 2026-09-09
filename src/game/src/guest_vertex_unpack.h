@@ -11,6 +11,7 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 
@@ -30,6 +31,8 @@
 #include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
+
+#include "project8_native_scene.h"
 
 REXCVAR_DEFINE_BOOL(guest_vertex_unpack_native, false, "Guest",
                     "Replace sub_82354BE0's vertex-format record unpack with "
@@ -301,7 +304,8 @@ inline void MaybeLog(uint64_t calls) {
 REX_HOOK_RAW(sub_82354BE0) {
   REX_FUNC_PROLOGUE();
 
-  const bool use_native = REXCVAR_GET(guest_vertex_unpack_native);
+  const bool use_native = REXCVAR_GET(guest_vertex_unpack_native) &&
+                          thps::native_scene::NativeCpuPreparationEnabled();
   if (!use_native) {
     const bool verify = REXCVAR_GET(guest_vertex_unpack_verify);
     const bool stats = REXCVAR_GET(guest_vertex_unpack_stats);
@@ -385,9 +389,17 @@ REX_HOOK_RAW(sub_82354BE0) {
 
   const bool use_simd =
       REXCVAR_GET(guest_vertex_unpack_simd) && thps::vertex_unpack::kHasSimd;
+  const auto native_begin = std::chrono::steady_clock::now();
   thps::vertex_unpack::Transform(
       reinterpret_cast<const uint8_t *>(REX_RAW_ADDR(source)),
       reinterpret_cast<uint8_t *>(REX_RAW_ADDR(destination)), use_simd);
+  const auto native_elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                  std::chrono::steady_clock::now() - native_begin)
+                                  .count();
+  thps::native_scene::RecordVertexPreparation(
+      {source, destination, static_cast<uint32_t>(thps::vertex_unpack::kInputSize),
+       static_cast<uint32_t>(thps::vertex_unpack::kOutputSize)},
+      static_cast<uint64_t>(native_elapsed));
   ctx.r3.u64 = std::rotl(REX_LOAD_U32(source + 248), 7) & 0x3;
   ctx.fpscr.enableFlushMode();
 

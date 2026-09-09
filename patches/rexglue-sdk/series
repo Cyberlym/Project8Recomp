@@ -26,3 +26,5 @@
 0026-android-bounded-private-logs.patch
 0027-android-launch-boundary-diagnostics.patch
 0028-android-first-unhandled-guest-fault.patch
+0029-android-vulkan-presentation-performance.patch
+0030-android-native-frame-and-plugin-policy.patch

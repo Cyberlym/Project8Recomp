@@ -1,7 +1,14 @@
 package com.cyberlym.project8probe;
 
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
+import android.graphics.Color;
+import android.view.Gravity;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import org.libsdl.app.SDLActivity;
@@ -29,9 +36,24 @@ public final class GameplayActivity extends SDLActivity {
     private static OutputStream persistentLog;
     private static File persistentLogFile;
     private static String persistentLogPath = "";
+    private static final long PERF_OVERLAY_INTERVAL_MS = 250;
+    private static final long PERF_LOG_INTERVAL_NS = 5_000_000_000L;
+    private static final int PERF_SNAPSHOT_VALUES = 21;
+
+    private final Handler performanceHandler = new Handler(Looper.getMainLooper());
+    private TextView performanceOverlay;
+    private long lastPerformanceLogNs;
 
     private static native boolean nativePrepareGameplay(String gameRoot);
     private static native void nativeInitializeGameplayLog();
+    private static native long[] nativeGetPresentationPerformance();
+
+    private final Runnable performanceOverlayUpdate = new Runnable() {
+        @Override public void run() {
+            updatePerformanceOverlay();
+            performanceHandler.postDelayed(this, PERF_OVERLAY_INTERVAL_MS);
+        }
+    };
 
     @Override protected void onCreate(Bundle state) {
         System.loadLibrary("main");
@@ -49,6 +71,64 @@ public final class GameplayActivity extends SDLActivity {
             return;
         }
         super.onCreate(state);
+        installPerformanceOverlay();
+    }
+
+    @Override protected void onDestroy() {
+        performanceHandler.removeCallbacks(performanceOverlayUpdate);
+        super.onDestroy();
+    }
+
+    private void installPerformanceOverlay() {
+        if (!BuildConfig.DEBUG) return;
+        performanceOverlay = new TextView(this);
+        performanceOverlay.setTextColor(Color.WHITE);
+        performanceOverlay.setTextSize(12);
+        performanceOverlay.setShadowLayer(2.0f, 1.0f, 1.0f, Color.BLACK);
+        performanceOverlay.setBackgroundColor(0x33000000);
+        performanceOverlay.setPadding(8, 5, 8, 5);
+        performanceOverlay.setText("FPS -- | -- ms");
+        performanceOverlay.setClickable(false);
+        performanceOverlay.setFocusable(false);
+        performanceOverlay.setEnabled(false);
+        FrameLayout.LayoutParams layout = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.START);
+        layout.setMargins(12, 12, 0, 0);
+        addContentView(performanceOverlay, layout);
+        performanceHandler.post(performanceOverlayUpdate);
+    }
+
+    private void updatePerformanceOverlay() {
+        if (performanceOverlay == null) return;
+        long[] snapshot = nativeGetPresentationPerformance();
+        if (snapshot == null || snapshot.length != PERF_SNAPSHOT_VALUES) return;
+
+        final long nowNs = snapshot[3];
+        final long gameFrameCount = snapshot[10];
+        final long windowFrameCount = snapshot[13];
+        final long windowElapsedNs = snapshot[14];
+        double fps = 0.0;
+        double frametimeMs = 0.0;
+        if (windowFrameCount >= 2 && windowElapsedNs > 0) {
+            fps = (windowFrameCount - 1) * 1_000_000_000.0 / windowElapsedNs;
+            frametimeMs = windowElapsedNs / (windowFrameCount - 1) / 1_000_000.0;
+        }
+        performanceOverlay.setText(String.format(Locale.US, "FPS %.1f | %.1f ms", fps, frametimeMs));
+
+        if (nowNs - lastPerformanceLogNs >= PERF_LOG_INTERVAL_NS) {
+            lastPerformanceLogNs = nowNs;
+            writeSessionLog(String.format(Locale.US,
+                    "P8_PERF2 game_fps=%.1f game_frametime_ms=%.1f game_frames=%d " +
+                            "presents=%d skipped=%d xenos_draws=%d queue_submits=%d " +
+                            "occlusion_queries=%d occlusion_waits=%d " +
+                            "native_cpu_preps=%d native_cpu_ns=%d pipelines=%d " +
+                            "shader_translates=%d pipeline_desc_hit=%d pipeline_desc_miss=%d " +
+                            "swapchain_recreations=%d",
+                    fps, frametimeMs, gameFrameCount, snapshot[0], snapshot[4], snapshot[15],
+                    snapshot[16], snapshot[17], snapshot[18], snapshot[19], snapshot[20],
+                    snapshot[5], snapshot[6], snapshot[7], snapshot[8], snapshot[9]));
+        }
     }
 
     private boolean prepareGame(String gameRoot) {
