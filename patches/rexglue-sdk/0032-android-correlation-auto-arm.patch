@@ -1,0 +1,128 @@
+diff --git a/include/rex/graphics/project8_draw_capture.h b/include/rex/graphics/project8_draw_capture.h
+index 50323c6..2c26171 100644
+--- a/include/rex/graphics/project8_draw_capture.h
++++ b/include/rex/graphics/project8_draw_capture.h
+@@ -12,6 +12,9 @@ struct Project8DrawMetadata {
+ };
+ void BeginProject8DrawCorrelation(uint64_t guest_swap_ordinal);
+ void EndProject8DrawCorrelation(uint64_t guest_swap_ordinal);
++void ArmProject8DrawCorrelation(uint64_t guest_swap_ordinal);
++bool HasProject8VertexPreparations();
++bool HasProject8DrawMetadata();
+ bool IsProject8DrawCorrelationActive();
+ void RecordProject8VertexPreparation(const Project8VertexPreparation& record);
+ void RecordProject8DrawMetadata(const Project8DrawMetadata& record);
+diff --git a/src/core/project8_draw_capture.cpp b/src/core/project8_draw_capture.cpp
+index 3c6672d..c4365df 100644
+--- a/src/core/project8_draw_capture.cpp
++++ b/src/core/project8_draw_capture.cpp
+@@ -19,6 +19,9 @@ void BeginProject8DrawCorrelation(uint64_t swap) {
+   opening_swap.store(swap, std::memory_order_relaxed);
+   active.store(true, std::memory_order_release);
+ }
++void ArmProject8DrawCorrelation(uint64_t swap) {
++  BeginProject8DrawCorrelation(swap);
++}
+ void EndProject8DrawCorrelation(uint64_t swap) {
+   if (!active.exchange(false, std::memory_order_acq_rel)) return;
+   std::lock_guard<std::mutex> lock(records_mutex);
+@@ -42,6 +45,12 @@ void EndProject8DrawCorrelation(uint64_t swap) {
+                 r.viewport[0], r.viewport[1], r.viewport[2], r.viewport[3]);
+   }
+ }
++bool HasProject8VertexPreparations() {
++  return preparation_count.load(std::memory_order_acquire) != 0;
++}
++bool HasProject8DrawMetadata() {
++  return draw_count.load(std::memory_order_acquire) != 0;
++}
+ bool IsProject8DrawCorrelationActive() { return active.load(std::memory_order_acquire); }
+ void RecordProject8VertexPreparation(const Project8VertexPreparation& r) {
+   if (!active.load(std::memory_order_acquire)) return;
+diff --git a/src/graphics/vulkan/draw_census.h b/src/graphics/vulkan/draw_census.h
+index 52676c1..1d77414 100644
+--- a/src/graphics/vulkan/draw_census.h
++++ b/src/graphics/vulkan/draw_census.h
+@@ -244,6 +244,7 @@ static_assert(sizeof(TrailerRecord) == 80);
+ // normal-path boundary hook; it is one relaxed load at IssueSwap and false
+ // until a capture command is issued.
+ bool HasPendingRequest();
++void RequestCapture();
+ 
+ class Recorder {
+  public:
+diff --git a/src/graphics/vulkan/draw_census.cc b/src/graphics/vulkan/draw_census.cc
+index de73ce6..462f012 100644
+--- a/src/graphics/vulkan/draw_census.cc
++++ b/src/graphics/vulkan/draw_census.cc
+@@ -76,13 +76,13 @@ void LogStatus() {
+       g_truncated.load(std::memory_order_relaxed), last_path);
+ }
+ 
++}  // namespace
++
+ void RequestCapture() {
+   g_requested.fetch_add(1, std::memory_order_relaxed);
+   g_requests_pending.fetch_add(1, std::memory_order_release);
+ }
+ 
+-}  // namespace
+-
+ REXCVAR_DEFINE_COMMAND(gpu_census_capture, RequestCapture, "GPU/Vulkan",
+                        "Capture the configured complete guest GPU frame sequence");
+ REXCVAR_DEFINE_COMMAND(gpu_census_status, LogStatus, "GPU/Vulkan",
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+index 452515a..ac03a0e 100644
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -2422,6 +2422,19 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+                                        uint32_t frontbuffer_height) {
+   ++draw_census_swap_ordinal_;
+   SCOPE_profile_cpu_f("gpu");
++#if REX_PLATFORM_ANDROID
++  // The Android diagnostic path waits for the game hook, then asks the
++  // existing bounded census for one window. No user CVar or asset dump is used.
++  static bool p8_auto_capture_requested = false;
++  if (!p8_auto_capture_requested && !rex::graphics::IsProject8DrawCorrelationActive()) {
++    rex::graphics::ArmProject8DrawCorrelation(draw_census_swap_ordinal_);
++  }
++  if (!p8_auto_capture_requested && rex::graphics::HasProject8VertexPreparations()) {
++    draw_census::RequestCapture();
++    p8_auto_capture_requested = true;
++  }
++#endif
++
+   vertex_buffers_in_sync_[0] = 0;
+   vertex_buffers_in_sync_[1] = 0;
+ 
+@@ -2437,8 +2450,17 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+     if (!draw_census_) {
+       draw_census_ = std::make_unique<draw_census::Recorder>();
+     }
+-    if (rex::graphics::IsProject8DrawCorrelationActive()) {
+-      rex::graphics::EndProject8DrawCorrelation(draw_census_swap_ordinal_);
++    if (draw_census_->HasOpenCapture() && rex::graphics::IsProject8DrawCorrelationActive()) {
++#if REX_PLATFORM_ANDROID
++      if (p8_auto_capture_requested && !rex::graphics::HasProject8DrawMetadata()) {
++        // The last bounded window had no draw candidate. Re-arm silently.
++        p8_auto_capture_requested = false;
++        rex::graphics::ArmProject8DrawCorrelation(draw_census_swap_ordinal_);
++      } else
++#endif
++      {
++        rex::graphics::EndProject8DrawCorrelation(draw_census_swap_ordinal_);
++      }
+     }
+     uint32_t census_mode_flags = 0;
+     if (native_residency_->native_frame()) {
+@@ -2465,7 +2487,9 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+         rex::perf::GetSnapshotCounter(rex::perf::CounterId::kDrawCalls));
+     if (census_started) {
+ #if REX_PLATFORM_ANDROID
+-      if (REXCVAR_GET(p8_android_draw_correlation_capture)) {
++      if (rex::graphics::IsProject8DrawCorrelationActive()) {
++        // Keep preparations recorded while waiting for the bounded census.
++      } else if (REXCVAR_GET(p8_android_draw_correlation_capture)) {
+         rex::graphics::BeginProject8DrawCorrelation(draw_census_swap_ordinal_);
+       }
+ #endif
