@@ -1,0 +1,32 @@
+diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
+index 1a58e95..343faa3 100644
+--- a/src/ui/vulkan/vulkan_presenter.cpp
++++ b/src/ui/vulkan/vulkan_presenter.cpp
+@@ -794,6 +794,13 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
+                                     reinterpret_cast<uintptr_t>(paint_context_.vulkan_surface),
+                                     new_surface_width, new_surface_height);
+ #endif
++      if (surface_unusable) {
++        // A lost Android WSI surface cannot be recreated safely on the same
++        // ANativeWindow. Release it after the retired swapchain, then wait for
++        // Window to provide a replacement Surface instead of retrying here.
++        paint_context_.DestroySwapchainAndVulkanSurface();
++        return SurfacePaintConnectResult::kFailureSurfaceUnusable;
++      }
+       // Couldn't create the swapchain for the existing surface - start over.
+       paint_context_.DestroySwapchainAndVulkanSurface();
+     }
+@@ -1159,6 +1166,13 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
+                                 reinterpret_cast<uintptr_t>(surface), width, height);
+ #endif
+   if (surface_capabilities_result != VK_SUCCESS) {
++#if REX_PLATFORM_ANDROID
++    // Surface loss is terminal for this AndroidNativeWindowSurface. The Window
++    // lifecycle will provide a replacement wrapper when its native window is
++    // replaced; retrying vkCreateAndroidSurfaceKHR on this one yields
++    // VK_ERROR_NATIVE_WINDOW_IN_USE_KHR on affected drivers.
++    ui_surface_unusable_out = surface_capabilities_result == VK_ERROR_SURFACE_LOST_KHR;
++#endif
+ #if REX_PLATFORM_ANDROID && defined(REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS)
+     AndroidPresentationDiagnostic(AndroidPresentationDiagnosticEvent::kVulkanSwapchainFailure,
+                                   int32_t(surface_capabilities_result),

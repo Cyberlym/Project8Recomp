@@ -1,0 +1,55 @@
+diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
+--- a/src/ui/rex_app.cpp
++++ b/src/ui/rex_app.cpp
+@@ -39,6 +39,10 @@
+ #include <rex/ui/keybinds.h>
+ #include <rex/version.h>
+ 
++#if REX_PLATFORM_ANDROID
++#include <SDL3/SDL_system.h>
++#endif
++
+ #include <fmt/format.h>
+ #include <imgui.h>
+ 
+@@ -105,6 +109,21 @@ bool ReXApp::OnInitialize() {
+ bool ReXApp::SetupEnvironment() {
+   auto exe_dir = rex::filesystem::GetExecutableFolder();
+ 
++#if REX_PLATFORM_ANDROID
++  // Android launches native code from /system/bin. Logs and the optional TOML
++  // must instead live under the activity's private files directory; SDL gets
++  // that directory from the active Activity without hard-coding its package.
++  const char* android_storage = SDL_GetAndroidInternalStoragePath();
++  if (!android_storage || !*android_storage) {
++    // Do not fall back to /system/bin: that would turn logging setup into an
++    // uncaught filesystem exception before the app can report a useful error.
++    return false;
++  }
++  const std::filesystem::path writable_root = android_storage;
++#else
++  const std::filesystem::path& writable_root = exe_dir;
++#endif
++
+   std::filesystem::path game_dir;
+   std::string game_data_cvar = REXCVAR_GET(game_data_root);
+   if (!game_data_cvar.empty()) {
+@@ -143,7 +158,8 @@ bool ReXApp::SetupEnvironment() {
+   }
+ 
+   PathConfig path_config{game_dir,  user_dir,     update_dir,
+-                         cache_dir, metadata_dir, exe_dir / (std::string(GetName()) + ".toml")};
++                         cache_dir, metadata_dir,
++                         writable_root / (std::string(GetName()) + ".toml")};
+   OnConfigurePaths(path_config);
+   game_data_root_ = path_config.game_data_root;
+   user_data_root_ = path_config.user_data_root;
+@@ -168,7 +184,7 @@ bool ReXApp::SetupEnvironment() {
+                                         log_level_str, category_levels);
+   if (log_file_cvar.empty()) {
+     log_config.app_name = std::string(GetName());
+-    log_config.log_dir = (exe_dir / "logs").string();
++    log_config.log_dir = (writable_root / "logs").string();
+   }
+ 
+   rex::InitLogging(log_config);

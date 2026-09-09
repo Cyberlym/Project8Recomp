@@ -2,10 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.cyberlym.project8probe">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
-    <application android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
-        android:label="Project8 Vulkan Probe" android:allowBackup="false"
+    <application android:theme="@android:style/Theme.Black.NoTitleBar"
+        android:label="Project 8 Android" android:allowBackup="false"
         android:supportsRtl="true">
-        <activity android:name=".ProbeActivity" android:screenOrientation="landscape"
+        <activity android:name=".LauncherActivity" android:screenOrientation="landscape"
             android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
             android:exported="true">
             <intent-filter>
@@ -13,5 +13,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity android:name=".ProbeActivity" android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+            android:exported="false" />
+        <activity android:name=".GameplayActivity" android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+            android:exported="false" />
     </application>
 </manifest>

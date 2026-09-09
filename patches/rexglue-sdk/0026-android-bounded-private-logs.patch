@@ -1,0 +1,56 @@
+diff --git a/src/core/logging.cpp b/src/core/logging.cpp
+--- a/src/core/logging.cpp
++++ b/src/core/logging.cpp
+@@ -226,8 +226,16 @@ void InitLogging(const LogConfig& config) {
+   }
+   if (!resolved_path.empty()) {
++    size_t max_file_size = static_cast<size_t>(REXCVAR_GET(log_max_file_size_mb)) * 1024 * 1024;
++    size_t max_files = static_cast<size_t>(REXCVAR_GET(log_max_files));
++#if REX_PLATFORM_ANDROID
++    // Android application data is not an unlimited diagnostic store. Keep the
++    // always-on private log bounded even if a stale desktop configuration
++    // contains larger retention settings.
++    max_file_size = 1024 * 1024;
++    max_files = 3;
++#endif
+     auto sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
+-        resolved_path, static_cast<size_t>(REXCVAR_GET(log_max_file_size_mb)) * 1024 * 1024,
+-        static_cast<size_t>(REXCVAR_GET(log_max_files)), false);
++        resolved_path, max_file_size, max_files, false);
+     sink->set_level(spdlog::level::trace);
+     sink->set_pattern(config.file_pattern);
+     g_file_sink = sink;
+diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
+--- a/src/ui/rex_app.cpp
++++ b/src/ui/rex_app.cpp
+@@ -199,14 +199,25 @@ bool ReXApp::SetupEnvironment() {
+-  std::string log_file_cvar = REXCVAR_GET(log_file);
+   std::string log_level_str = REXCVAR_GET(log_level);
+   if (REXCVAR_GET(log_verbose) && log_level_str == "info")
+     log_level_str = "trace";
++#if !REX_PLATFORM_ANDROID
++  std::string log_file_cvar = REXCVAR_GET(log_file);
++#endif
+ 
+   auto category_levels = rex::ParseCategoryLevelsFromConfig(config_path_);
++#if REX_PLATFORM_ANDROID
++  // Keep automatic diagnostics private and bounded. In particular, don't use
++  // the desktop sequential-name policy, which makes every app launch retain a
++  // separate log in filesDir indefinitely.
++  const std::string android_log_file =
++      (writable_root / "logs" / (std::string(GetName()) + ".log")).string();
++  auto log_config = rex::BuildLogConfig(android_log_file.c_str(), log_level_str, category_levels);
++#else
+   auto log_config = rex::BuildLogConfig(log_file_cvar.empty() ? nullptr : log_file_cvar.c_str(),
+                                         log_level_str, category_levels);
+   if (log_file_cvar.empty()) {
+     log_config.app_name = std::string(GetName());
+     log_config.log_dir = (writable_root / "logs").string();
+   }
++#endif
+ 
+   rex::InitLogging(log_config);
+*** Update File: /workspaces/Project8Recomp/patches/rexglue-sdk/series
+@@
+ 0025-android-private-runtime-cache-roots.patch
++0026-android-bounded-private-logs.patch

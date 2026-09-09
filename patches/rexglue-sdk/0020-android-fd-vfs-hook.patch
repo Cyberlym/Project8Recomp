@@ -1,0 +1,230 @@
+diff --git a/include/rex/rex_app.h b/include/rex/rex_app.h
+index 1f52480..182d8bc 100644
+--- a/include/rex/rex_app.h
++++ b/include/rex/rex_app.h
+@@ -114,6 +114,16 @@ class ReXApp : public ui::WindowedApp, public ui::WindowListener, public ui::Win
+   /// Override to adjust game/user/update data paths programmatically.
+   virtual void OnConfigurePaths(PathConfig& paths) { (void)paths; }
+ 
++  // Platform frontends that inject a VFS game device may accept an existing
++  // bookkeeping directory instead of a host directory containing game files.
++  // The default keeps the historical host-directory contract.
++  virtual bool ValidateGameDataRoot(const PathConfig& paths) const;
++
++  // Called before loading the startup XEX. The default verifies the matching
++  // host file; a VFS-backed frontend may verify it through its device instead.
++  virtual bool ValidateXexImagePath(const PathConfig& paths,
++                                    std::string_view xex_image) const;
++
+   /// Called after SetupPresentation returns (window and ImGui drawer are live)
+   /// and before Runtime construction. Override to resolve paths from user
+   /// input shown through an ImGui dialog.
+diff --git a/include/rex/runtime.h b/include/rex/runtime.h
+index 34f226c..17c309a 100644
+--- a/include/rex/runtime.h
++++ b/include/rex/runtime.h
+@@ -64,6 +64,12 @@ class ImGuiDrawer;
+ /// Audio uses a factory because AudioSystem requires a FunctionDispatcher* at
+ /// construction time, which is only available during Setup().
+ struct RuntimeConfig {
++  // Optional replacement for the host-directory game device. This keeps the
++  // default desktop path unchanged while permitting a platform frontend to
++  // provide a read-only filesystem device for content it cannot expose as a
++  // host path (for example a seekable Android document FD).
++  std::function<std::unique_ptr<filesystem::Device>(std::string_view mount_path)>
++      game_device_factory;
+   std::unique_ptr<system::IGraphicsSystem> graphics;
+   // GPU emulation plugin loaded by ReXApp when `graphics` is empty
+   // (e.g. "xenos"); empty means no GPU emulation.
+@@ -187,6 +193,8 @@ class Runtime {
+   std::filesystem::path update_data_root_;
+   std::filesystem::path cache_root_;
+   std::filesystem::path metadata_root_;
++  std::function<std::unique_ptr<filesystem::Device>(std::string_view mount_path)>
++      game_device_factory_;
+ 
+   ui::WindowedAppContext* app_context_ = nullptr;
+   ui::Window* display_window_ = nullptr;
+diff --git a/include/rex/ui/windowed_app.h b/include/rex/ui/windowed_app.h
+index 50638d6..f8d1ff0 100644
+--- a/include/rex/ui/windowed_app.h
++++ b/include/rex/ui/windowed_app.h
+@@ -164,6 +164,8 @@ class WindowedApp {
+ };
+ 
+ #if XE_UI_WINDOWED_APPS_IN_LIBRARY
++// Runs a registered library app through the normal SDL lifecycle.
++int RunWindowedApp(int argc, char** argv);
+ // Multiple apps in a single library.
+ #define REX_DEFINE_APP(identifier, creator)                                   \
+   namespace rex {                                                             \
+diff --git a/src/system/runtime.cpp b/src/system/runtime.cpp
+index c10694c..6bcbe81 100644
+--- a/src/system/runtime.cpp
++++ b/src/system/runtime.cpp
+@@ -113,6 +113,7 @@ X_STATUS Runtime::Setup(RuntimeConfig config) {
+   thread::EnableAffinityConfiguration();
+ 
+   tool_mode_ = config.tool_mode;
++  game_device_factory_ = std::move(config.game_device_factory);
+ 
+   // Create memory system first
+   memory_ = std::make_unique<memory::Memory>();
+@@ -292,21 +293,29 @@ uint8_t* Runtime::virtual_membase() const {
+ }
+ 
+ bool Runtime::SetupVfs() {
+-  if (game_data_root_.empty()) {
++  if (game_data_root_.empty() && !game_device_factory_) {
+     REXSYS_WARN("Runtime::SetupVfs: No game_data_root specified, skipping VFS setup");
+     return true;
+   }
+ 
+-  auto abs_game_root = std::filesystem::absolute(game_data_root_);
+-  if (!std::filesystem::exists(abs_game_root)) {
+-    REXSYS_ERROR("Runtime::SetupVfs: game_data_root does not exist: {}", abs_game_root.string());
+-    return false;
+-  }
+-
+   // Mount game_data_root as \Device\Harddisk0\Partition1
+   auto mount_path = "\\Device\\Harddisk0\\Partition1";
+-  auto device = std::make_unique<rex::filesystem::HostPathDevice>(
+-      mount_path, abs_game_root, !REXCVAR_GET(allow_game_relative_writes));
++  std::unique_ptr<rex::filesystem::Device> device;
++  if (game_device_factory_) {
++    device = game_device_factory_(mount_path);
++    if (!device) {
++      REXSYS_ERROR("Runtime::SetupVfs: game device factory returned no device");
++      return false;
++    }
++  } else {
++    auto abs_game_root = std::filesystem::absolute(game_data_root_);
++    if (!std::filesystem::exists(abs_game_root)) {
++      REXSYS_ERROR("Runtime::SetupVfs: game_data_root does not exist: {}", abs_game_root.string());
++      return false;
++    }
++    device = std::make_unique<rex::filesystem::HostPathDevice>(
++        mount_path, abs_game_root, !REXCVAR_GET(allow_game_relative_writes));
++  }
+   if (!device->Initialize()) {
+     REXSYS_ERROR("Runtime::SetupVfs: Failed to initialize host path device");
+     return false;
+@@ -315,7 +324,7 @@ bool Runtime::SetupVfs() {
+     REXSYS_ERROR("Runtime::SetupVfs: Failed to register host path device");
+     return false;
+   }
+-  REXSYS_DEBUG("  Mounted {} at {}", abs_game_root.string(), mount_path);
++  REXSYS_DEBUG("  Mounted game device at {}", mount_path);
+ 
+   // Register symbolic links for game: and D:
+   file_system_->RegisterSymbolicLink("game:", mount_path);
+diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
+index b94fe9e..32e66b9 100644
+--- a/src/ui/rex_app.cpp
++++ b/src/ui/rex_app.cpp
+@@ -207,7 +207,7 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
+     rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
+     return false;
+   }
+-  if (!std::filesystem::is_directory(paths.game_data_root)) {
++  if (!ValidateGameDataRoot(paths)) {
+     auto msg = fmt::format("--game_data_root does not exist: {}", paths.game_data_root.string());
+     REXLOG_ERROR("{}", msg);
+     rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
+@@ -262,25 +262,11 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
+   std::string xex_image = "game:\\default.xex";
+   OnLoadXexImage(xex_image);
+ 
+-  // Mirrors the game:\ / d:\ -> game_data_root mapping in Runtime::SetupVfs.
+-  {
+-    constexpr std::string_view kGameDevice = "game:\\";
+-    constexpr std::string_view kDDevice = "d:\\";
+-    std::string_view tail = xex_image;
+-    if (tail.starts_with(kGameDevice)) {
+-      tail.remove_prefix(kGameDevice.size());
+-    } else if (tail.starts_with(kDDevice)) {
+-      tail.remove_prefix(kDDevice.size());
+-    }
+-    std::string host_tail{tail};
+-    std::replace(host_tail.begin(), host_tail.end(), '\\', '/');
+-    auto xex_host = paths.game_data_root / host_tail;
+-    if (!std::filesystem::is_regular_file(xex_host)) {
+-      auto msg = fmt::format("Entrypoint XEX not found: {}", xex_host.string());
+-      REXLOG_ERROR("{}", msg);
+-      rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
+-      return false;
+-    }
++  if (!ValidateXexImagePath(paths, xex_image)) {
++    auto msg = fmt::format("Entrypoint XEX not found: {}", xex_image);
++    REXLOG_ERROR("{}", msg);
++    rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
++    return false;
+   }
+ 
+   status = runtime_->LoadXexImage(xex_image);
+@@ -305,6 +291,25 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
+   return true;
+ }
+ 
++bool ReXApp::ValidateGameDataRoot(const PathConfig& paths) const {
++  return std::filesystem::is_directory(paths.game_data_root);
++}
++
++bool ReXApp::ValidateXexImagePath(const PathConfig& paths,
++                                  std::string_view xex_image) const {
++  constexpr std::string_view kGameDevice = "game:\\";
++  constexpr std::string_view kDDevice = "d:\\";
++  std::string_view tail = xex_image;
++  if (tail.starts_with(kGameDevice)) {
++    tail.remove_prefix(kGameDevice.size());
++  } else if (tail.starts_with(kDDevice)) {
++    tail.remove_prefix(kDDevice.size());
++  }
++  std::string host_tail{tail};
++  std::replace(host_tail.begin(), host_tail.end(), '\\', '/');
++  return std::filesystem::is_regular_file(paths.game_data_root / host_tail);
++}
++
+ bool ReXApp::SetupPresentation() {
+   config_.gpu_plugin = REXCVAR_GET(gpu_plugin);
+   config_.audio_factory = REX_AUDIO_BACKEND(rex::audio::sdl::SDLAudioSystem);
+diff --git a/src/ui/windowed_app_main_sdl.cpp b/src/ui/windowed_app_main_sdl.cpp
+index 77bb1dc..73b1e7e 100644
+--- a/src/ui/windowed_app_main_sdl.cpp
++++ b/src/ui/windowed_app_main_sdl.cpp
+@@ -36,7 +36,7 @@
+ 
+ namespace {
+ 
+-int RunWindowedApp(int argc, char** argv) {
++int RunWindowedAppImpl(int argc, char** argv) {
+   auto remaining = rex::cvar::Init(argc, argv);
+   rex::cvar::ApplyEnvironment();
+   rex::InitLoggingEarly();
+@@ -102,6 +102,10 @@ std::vector<std::string> WideArgsToUtf8(int argc, wchar_t** wargv) {
+ 
+ }  // namespace
+ 
++int rex::ui::RunWindowedApp(int argc, char** argv) {
++  return RunWindowedAppImpl(argc, argv);
++}
++
+ #if REX_PLATFORM_WIN32
+ 
+ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR command_line,
+@@ -121,13 +125,13 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
+   for (auto& s : utf8_args) {
+     argv_ptrs.push_back(s.data());
+   }
+-  return RunWindowedApp(static_cast<int>(argv_ptrs.size()), argv_ptrs.data());
++  return rex::ui::RunWindowedApp(static_cast<int>(argv_ptrs.size()), argv_ptrs.data());
+ }
+ 
+ #else
+ 
+ int main(int argc, char* argv[]) {
+-  return RunWindowedApp(argc, argv);
++  return rex::ui::RunWindowedApp(argc, argv);
+ }
+ 
+ #endif

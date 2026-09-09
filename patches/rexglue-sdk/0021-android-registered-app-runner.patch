@@ -1,0 +1,88 @@
+diff --git a/include/rex/ui/windowed_app.h b/include/rex/ui/windowed_app.h
+index f8d1ff04..851355b2 100644
+--- a/include/rex/ui/windowed_app.h
++++ b/include/rex/ui/windowed_app.h
+@@ -164,8 +164,8 @@ class WindowedApp {
+ };
+ 
+ #if XE_UI_WINDOWED_APPS_IN_LIBRARY
+-// Runs a registered library app through the normal SDL lifecycle.
+-int RunWindowedApp(int argc, char** argv);
++// Runs a named registered library app through the normal SDL lifecycle.
++int RunWindowedApp(std::string_view identifier, int argc, char** argv);
+ // Multiple apps in a single library.
+ #define REX_DEFINE_APP(identifier, creator)                                   \
+   namespace rex {                                                             \
+diff --git a/src/ui/CMakeLists.txt b/src/ui/CMakeLists.txt
+index ed4acd78..0de354a4 100644
+--- a/src/ui/CMakeLists.txt
++++ b/src/ui/CMakeLists.txt
+@@ -18,6 +18,7 @@ set(REXUI_CORE_SOURCES
+     windowed_app.cpp
+     windowed_app_context.cpp
+     windowed_app_context_sdl.cpp
++    $<$<BOOL:${ANDROID}>:windowed_app_main_sdl.cpp>
+ )
+ 
+ # Optional overlay dialogs
+diff --git a/src/ui/windowed_app_main_sdl.cpp b/src/ui/windowed_app_main_sdl.cpp
+index 73b1e7e8..46910a58 100644
+--- a/src/ui/windowed_app_main_sdl.cpp
++++ b/src/ui/windowed_app_main_sdl.cpp
+@@ -36,7 +36,7 @@
+ 
+ namespace {
+ 
+-int RunWindowedAppImpl(int argc, char** argv) {
++int RunWindowedAppImpl(std::string_view identifier, int argc, char** argv) {
+   auto remaining = rex::cvar::Init(argc, argv);
+   rex::cvar::ApplyEnvironment();
+   rex::InitLoggingEarly();
+@@ -55,7 +55,16 @@ int RunWindowedAppImpl(int argc, char** argv) {
+     }
+ #endif
+ 
++#if XE_UI_WINDOWED_APPS_IN_LIBRARY
++    auto creator = rex::ui::WindowedApp::GetCreator(std::string(identifier));
++    if (!creator) {
++      REXLOG_ERROR("No registered application named '{}'", identifier);
++      return EXIT_FAILURE;
++    }
++    std::unique_ptr<rex::ui::WindowedApp> app = creator(app_context);
++#else
+     std::unique_ptr<rex::ui::WindowedApp> app = rex::ui::GetWindowedAppCreator()(app_context);
++#endif
+ 
+     // Match remaining positional args to the app's expected options.
+     const auto& option_names = app->GetPositionalOptions();
+@@ -102,9 +111,11 @@ std::vector<std::string> WideArgsToUtf8(int argc, wchar_t** wargv) {
+ 
+ }  // namespace
+ 
+-int rex::ui::RunWindowedApp(int argc, char** argv) {
+-  return RunWindowedAppImpl(argc, argv);
++#if XE_UI_WINDOWED_APPS_IN_LIBRARY
++int rex::ui::RunWindowedApp(std::string_view identifier, int argc, char** argv) {
++  return RunWindowedAppImpl(identifier, argc, argv);
+ }
++#endif
+ 
+ #if REX_PLATFORM_WIN32
+ 
+@@ -125,13 +136,13 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
+   for (auto& s : utf8_args) {
+     argv_ptrs.push_back(s.data());
+   }
+-  return rex::ui::RunWindowedApp(static_cast<int>(argv_ptrs.size()), argv_ptrs.data());
++  return RunWindowedAppImpl({}, static_cast<int>(argv_ptrs.size()), argv_ptrs.data());
+ }
+ 
+-#else
++#elif !REX_PLATFORM_ANDROID
+ 
+ int main(int argc, char* argv[]) {
+-  return rex::ui::RunWindowedApp(argc, argv);
++  return RunWindowedAppImpl({}, argc, argv);
+ }
+ 
+ #endif

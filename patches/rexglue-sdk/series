@@ -14,3 +14,15 @@
 0014-android-lifecycle-diagnostics.patch
 0015-sdl-android-recreate-thread-barrier.patch
 0016-android-quit-and-native-window-lifetime.patch
+0017-android-use-current-surface-extent.patch
+0018-android-swapchain-reconnect-diagnostics.patch
+0019-android-surface-lost-recovery.patch
+0020-android-fd-vfs-hook.patch
+0021-android-registered-app-runner.patch
+0022-android-private-logging-root.patch
+0023-android-runtime-setup-trace.patch
+0024-android-gpu-plugin-library-dir.patch
+0025-android-private-runtime-cache-roots.patch
+0026-android-bounded-private-logs.patch
+0027-android-launch-boundary-diagnostics.patch
+0028-android-first-unhandled-guest-fault.patch

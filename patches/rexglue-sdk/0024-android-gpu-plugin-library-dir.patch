@@ -1,0 +1,105 @@
+diff --git a/src/system/gpu_plugin_loader.cpp b/src/system/gpu_plugin_loader.cpp
+index 754fa13..70455c7 100644
+--- a/src/system/gpu_plugin_loader.cpp
++++ b/src/system/gpu_plugin_loader.cpp
+@@ -17,9 +17,15 @@
+ 
+ #include <fmt/format.h>
+ 
++#include <rex/platform.h>
++
++#if REX_PLATFORM_ANDROID
++#include <jni.h>
++#include <SDL3/SDL_system.h>
++#endif
++
+ #include <rex/filesystem.h>
+ #include <rex/logging.h>
+-#include <rex/platform.h>
+ #include <rex/platform/dynlib.h>
+ 
+ namespace rex::system {
+@@ -52,10 +58,70 @@ std::vector<platform::DynamicLibrary>& LoadedPlugins() {
+   return plugins;
+ }
+ 
++std::filesystem::path PluginFolder() {
++#if REX_PLATFORM_ANDROID
++  // Android's process executable is /system/bin/app_process, while packaged
++  // JNI libraries live in ApplicationInfo.nativeLibraryDir. Query the active
++  // SDL Activity so runtime-loaded plugins follow the APK's ABI-specific
++  // library location without depending on a package name or storage path.
++  auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
++  auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
++  if (!env || !activity) {
++    return {};
++  }
++
++  jclass activity_class = env->GetObjectClass(activity);
++  if (!activity_class || env->ExceptionCheck()) {
++    env->ExceptionClear();
++    return {};
++  }
++  jmethodID application_info_method = env->GetMethodID(
++      activity_class, "getApplicationInfo", "()Landroid/content/pm/ApplicationInfo;");
++  jobject application_info = application_info_method
++      ? env->CallObjectMethod(activity, application_info_method)
++      : nullptr;
++  env->DeleteLocalRef(activity_class);
++  if (!application_info || env->ExceptionCheck()) {
++    env->ExceptionClear();
++    return {};
++  }
++
++  jclass application_info_class = env->GetObjectClass(application_info);
++  jfieldID native_library_dir_field = application_info_class
++      ? env->GetFieldID(application_info_class, "nativeLibraryDir", "Ljava/lang/String;")
++      : nullptr;
++  jstring native_library_dir = native_library_dir_field
++      ? static_cast<jstring>(env->GetObjectField(application_info, native_library_dir_field))
++      : nullptr;
++  if (application_info_class) {
++    env->DeleteLocalRef(application_info_class);
++  }
++  env->DeleteLocalRef(application_info);
++  if (!native_library_dir || env->ExceptionCheck()) {
++    env->ExceptionClear();
++    return {};
++  }
++
++  const char* chars = env->GetStringUTFChars(native_library_dir, nullptr);
++  std::filesystem::path folder = chars ? std::filesystem::path(chars) : std::filesystem::path();
++  if (chars) {
++    env->ReleaseStringUTFChars(native_library_dir, chars);
++  }
++  env->DeleteLocalRef(native_library_dir);
++  if (env->ExceptionCheck()) {
++    env->ExceptionClear();
++    return {};
++  }
++  return folder;
++#else
++  return rex::filesystem::GetExecutableFolder();
++#endif
++}
++
+ }  // namespace
+ 
+ std::unique_ptr<IGraphicsSystem> LoadGpuPlugin(std::string_view name, std::string_view backend) {
+-  auto path = rex::filesystem::GetExecutableFolder() / PluginFileName(name);
++  auto path = PluginFolder() / PluginFileName(name);
+   if (!std::filesystem::exists(path)) {
+     REXSYS_ERROR(
+         "GPU plugin '{}' not found at {}. Stage it next to the executable "
+diff --git a/src/graphics/CMakeLists.txt b/src/graphics/CMakeLists.txt
+index 89e9aea..63bb665 100644
+--- a/src/graphics/CMakeLists.txt
++++ b/src/graphics/CMakeLists.txt
+@@ -137,6 +137,7 @@ endif()
+ # and relinking them would duplicate global state.
+ target_link_libraries(rexgpu-xenos PRIVATE
+     rexruntime
++    libucontext
+     xxHash::xxhash
+ )
+ 

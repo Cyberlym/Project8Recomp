@@ -1,0 +1,96 @@
+diff --git a/include/rex/system/mmio_handler.h b/include/rex/system/mmio_handler.h
+--- a/include/rex/system/mmio_handler.h
++++ b/include/rex/system/mmio_handler.h
+@@ -11,5 +11,6 @@
+ #pragma once
+ 
++#include <cstdint>
+ #include <memory>
+ #include <mutex>
+ #include <vector>
+@@ -46,6 +47,6 @@ class MMIOHandler {
+   typedef uint32_t (*HostToGuestVirtual)(const void* context, const void* host_address);
+   typedef bool (*AccessViolationCallback)(
+       std::unique_lock<std::recursive_mutex> global_lock_locked_once, void* context,
+-      void* host_address, bool is_write);
++      void* host_address, bool is_write, uintptr_t host_pc);
+ 
+   // access_violation_callback is called with global_critical_region locked once
+diff --git a/include/rex/system/xmemory.h b/include/rex/system/xmemory.h
+--- a/include/rex/system/xmemory.h
++++ b/include/rex/system/xmemory.h
+@@ -567,9 +567,9 @@ class Memory {
+   static uint32_t HostToGuestVirtualThunk(const void* context, const void* host_address);
+ 
+   bool AccessViolationCallback(std::unique_lock<std::recursive_mutex> global_lock_locked_once,
+-                               void* host_address, bool is_write);
++                               void* host_address, bool is_write, uintptr_t host_pc);
+   static bool AccessViolationCallbackThunk(
+       std::unique_lock<std::recursive_mutex> global_lock_locked_once, void* context,
+-      void* host_address, bool is_write);
++      void* host_address, bool is_write, uintptr_t host_pc);
+ 
+   std::filesystem::path file_name_;
+diff --git a/src/system/mmio_handler.cpp b/src/system/mmio_handler.cpp
+--- a/src/system/mmio_handler.cpp
++++ b/src/system/mmio_handler.cpp
+@@ -419,8 +419,8 @@ bool MMIOHandler::ExceptionCallback(arch::Exception* ex) {
+     // otherwise deliver a fatal signal. Cost stays off the hot path; the race
+     // is still detected.
+     if (access_violation_callback_) {
+       if (access_violation_callback_(std::move(lock), access_violation_callback_context_,
+-                                     fault_host_address, is_write)) {
++                                     fault_host_address, is_write, ex->pc())) {
+         return true;
+       }
+     }
+diff --git a/src/system/xmemory.cpp b/src/system/xmemory.cpp
+--- a/src/system/xmemory.cpp
++++ b/src/system/xmemory.cpp
+@@ -10,5 +10,6 @@
+  */
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <cstring>
+ #include <utility>
+@@ -535,7 +536,7 @@ runtime::MMIORange* Memory::LookupVirtualMappedRange(uint32_t virtual_address) {
+ }
+ 
+ bool Memory::AccessViolationCallback(std::unique_lock<std::recursive_mutex> global_lock_locked_once,
+-                                     void* host_address, bool is_write) {
++                                     void* host_address, bool is_write, uintptr_t host_pc) {
+   // Access via physical_membase_ is special, when need to bypass everything
+   // (for instance, for a data provider to actually write the data) so only
+   // triggering callbacks on virtual memory regions.
+@@ -546,10 +547,21 @@ bool Memory::AccessViolationCallback(std::unique_lock<std::recursive_mutex> glo
+   uint32_t virtual_address = HostToGuestVirtual(host_address);
+   BaseHeap* heap = LookupHeap(virtual_address);
+   if (!heap || heap->heap_type() != memory::HeapType::kGuestPhysical) {
++#if REX_PLATFORM_ANDROID
++    static std::atomic_bool logged_first_unhandled_guest_fault(false);
++    if (!logged_first_unhandled_guest_fault.exchange(true, std::memory_order_relaxed)) {
++      REXSYS_ERROR(
++          "P8_FIRST_UNHANDLED_GUEST_FAULT host_pc=0x{:016X} fault_guest=0x{:08X} "
++          "fault_host=0x{:016X} thread=0x{:X} access={} guest_pc=unavailable",
++          host_pc, virtual_address, reinterpret_cast<uintptr_t>(host_address),
++          rex::thread::current_thread_id(), is_write ? "write" : "read");
++    }
++#else
+     REXSYS_ERROR(
+         "Unhandled guest access violation: {} of guest 0x{:08X} (host 0x{:016X}) on thread 0x{:X}",
+         is_write ? "write" : "read", virtual_address, reinterpret_cast<uintptr_t>(host_address),
+         rex::thread::current_thread_id());
++#endif
+     return false;
+   }
+ 
+@@ -647,6 +659,6 @@ bool Memory::AccessViolationCallback(std::unique_lock<std::recursive_mutex> glo
+ bool Memory::AccessViolationCallbackThunk(
+     std::unique_lock<std::recursive_mutex> global_lock_locked_once, void* context,
+-    void* host_address, bool is_write) {
++    void* host_address, bool is_write, uintptr_t host_pc) {
+   return reinterpret_cast<memory::Memory*>(context)->AccessViolationCallback(
+-      std::move(global_lock_locked_once), host_address, is_write);
++      std::move(global_lock_locked_once), host_address, is_write, host_pc);
+ }

@@ -97,7 +97,7 @@ class ThpsP8App : public rex::ReXApp {
     // After registration, so GetFunction can find what it is replacing.
     thps::spin::Install(runtime());
 
-#ifdef __linux__
+#if defined(__linux__) && !defined(__ANDROID__)
     // Let same-user tools (gdb PC sampler) attach under yama ptrace_scope=1.
     prctl(PR_SET_PTRACER, (unsigned long)-1, 0, 0, 0);
     std::signal(SIGTERM, ThpsP8OnTerminate);

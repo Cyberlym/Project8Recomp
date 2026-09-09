@@ -1,0 +1,46 @@
+diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
+--- a/src/ui/rex_app.cpp
++++ b/src/ui/rex_app.cpp
+@@ -131,12 +131,19 @@ bool ReXApp::SetupEnvironment() {
+ 
+   // User data: cvar override, or platform user directory
+   std::filesystem::path user_dir;
++#if REX_PLATFORM_ANDROID
++  // HOME is /data in an Android app process, so the POSIX XDG fallback would
++  // incorrectly resolve to /data/.local. Keep all persistent runtime data in
++  // the Activity's private files directory instead.
++  user_dir = writable_root / GetName();
++#else
+   std::string user_data_cvar = REXCVAR_GET(user_data_root);
+   if (!user_data_cvar.empty()) {
+     user_dir = user_data_cvar;
+   } else {
+     user_dir = rex::filesystem::GetUserFolder() / GetName();
+   }
++#endif
+ 
+   // Update data: cvar override, or empty (opt-in)
+   std::filesystem::path update_dir;
+@@ -146,11 +153,22 @@ bool ReXApp::SetupEnvironment() {
+ 
+   // Cache: cvar override, or user_dir/cache
+   std::filesystem::path cache_dir;
++#if REX_PLATFORM_ANDROID
++  // Shader and pipeline artifacts are discardable. SDL queries cacheDir from
++  // the active Activity, avoiding a package name, public storage and the
++  // desktop XDG/HOME rules.
++  const char* android_cache = SDL_GetAndroidCachePath();
++  if (!android_cache || !*android_cache) {
++    return false;
++  }
++  cache_dir = android_cache;
++#else
+   std::string cache_root_cvar = REXCVAR_GET(cache_root);
+   if (!cache_root_cvar.empty()) {
+     cache_dir = cache_root_cvar;
+   } else {
+     cache_dir = user_dir / "cache";
+   }
++#endif
+ 
+   std::filesystem::path metadata_dir;

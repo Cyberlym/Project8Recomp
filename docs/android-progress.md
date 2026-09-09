@@ -1014,3 +1014,723 @@ e gate de conteúdo passaram. Ninja incremental `--parallel 2` ligou
 `508968cf2ab1b887c40491e4ac1dfc3ec4cda05d6e45f5f2051cee3c8c6694e9`.
 Assinaturas v2/v3 verificadas. **BUILD VERIFIED, DEVICE TEST REQUIRED**; 5B.4
 não é device verified, a Etapa 5 não está completa e a Etapa 6 não foi iniciada.
+
+## 2026-09-08 — Correção de extent Vulkan na rotação
+
+O caminho de resize reutiliza primeiro a `VkSurfaceKHR` existente, mas
+`CreateSwapchainForVulkanSurface` calculava `imageExtent` somente do tamanho SDL
+e de `minImageExtent`/`maxImageExtent`; ignorava `currentExtent`. Quando Android
+WSI fixa `currentExtent` durante a rotação, Vulkan exige esse valor exato. Um
+tamanho SDL transitório pode então fazer `vkCreateSwapchainKHR` falhar, e o
+caminho genérico destrói a surface ainda associada à mesma `ANativeWindow`,
+levando à recriação que retorna `VK_ERROR_NATIVE_WINDOW_IN_USE_KHR`.
+
+O novo patch `0017-android-use-current-surface-extent.patch` usa
+`currentExtent` apenas em Android quando ele é definido; quando indefinido,
+preserva o cálculo anterior. Não altera lifecycle SDL, ownership de
+`ANativeWindow`, presenter adicional ou o comportamento desktop. O patch aplica
+com `git apply --check --index` sobre o checkout v0.10.0 já patchado, a série de
+17 patches e `git diff --check` passaram, e nenhum pin ou submodule foi alterado.
+
+O Ninja incremental autorizado recompilou `vulkan_presenter.cpp` e relinkou
+`librexruntime.so` e `libmain.so` sem erro, clean, download ou regeneração.
+Houve apenas os avisos preexistentes de `std::move` pessimista em
+`presenter.h` e do parâmetro `was_paintable` não usado. Estado: **BUILD VERIFIED,
+DEVICE TEST REQUIRED**. Próximo passo: testar rotação no Moto G34 antes de
+marcar a Etapa 5 como concluída.
+
+## 2026-09-08 — Diagnóstico do reconnect Vulkan na rotação
+
+A nova evidência física confirma que a falha inicial de swapchain ainda não tem
+`VkResult` registrado. Pelo código, qualquer retorno nulo do criador de
+swapchain para a surface existente — inclusive os caminhos explicitamente
+descritos como recuperáveis — promove imediatamente o estado para
+`DestroySwapchainAndVulkanSurface()`. Só então a recriação sobre a mesma
+`ANativeWindow` retorna `VK_ERROR_NATIVE_WINDOW_IN_USE_KHR`; repetir essa
+criação não recupera, mas uma nova `AndroidNativeWindowSurface` recupera.
+
+O patch `0018-android-swapchain-reconnect-diagnostics.patch` não muda essa
+decisão. Apenas registra, em reconnect Android, identidade do wrapper,
+`oldSwapchain`, surface anterior ao fallback, `surface_unusable`, tamanho
+solicitado, capabilities/extents e o estágio e `VkResult` das chamadas que podem
+retornar falha. O probe acrescenta essas linhas ao export existente. Estado:
+**IMPLEMENTED, BUILD/DEVICE TEST REQUIRED**; não houve build nesta investigação.
+
+O build incremental autorizado do diagnóstico foi empacotado sem recompilar C++
+ou Java. O APK em `android/Project8VulkanProbe-arm64-v8a.apk` tem 24.359.627
+bytes e SHA-256
+`63a06c83be7e2086d91e3f4172f4acd296a1ed9ec55aa788361b9e65b5dd410b`.
+`zipalign` concluiu e `apksigner verify` confirmou assinatura v2/v3. Estado
+permanece **BUILD VERIFIED, DEVICE TEST REQUIRED**; aguarda export de rotação
+no Moto G34.
+
+## 2026-09-08 — Recuperação Android de Vulkan surface loss
+
+O export 0018 identificou `VK_ERROR_SURFACE_LOST_KHR` em
+`vkGetPhysicalDeviceSurfaceCapabilitiesKHR`. `PrepareForSwapchainRetirement()`
+aguarda os submissions, libera os framebuffers e retorna o swapchain; o caller o
+destrói com `vkDestroySwapchainKHR` antes de destruir a surface. Portanto não há
+swapchain aposentado prendendo a `ANativeWindow` no fallback.
+
+O problema é a classificação: surface loss deixava `surface_unusable=false`,
+forçando recriação imediata sobre a mesma window e
+`VK_ERROR_NATIVE_WINDOW_IN_USE_KHR`. O patch 0019 marca surface loss como
+inutilizável somente no Android, destrói a surface após o swapchain e retorna
+`kFailureSurfaceUnusable`. O presenter aguarda `Window::OnSurfaceChanged(true)`
+fornecer uma nova `AndroidNativeWindowSurface`, sem retry, espera arbitrária ou
+Activity recreate. Estado: **IMPLEMENTED, BUILD/DEVICE TEST REQUIRED**.
+
+O build 0019 foi empacotado sem recompilar C++ ou Java. O APK em
+`android/Project8VulkanProbe-arm64-v8a.apk` tem 24.359.627 bytes e SHA-256
+`2407838ac27852a6ce076669afaaf1357e176562f6f97185b89d01c8719135f3`.
+`zipalign` concluiu e `apksigner verify` confirmou assinatura v2/v3. Estado
+permanece **BUILD VERIFIED, DEVICE TEST REQUIRED**; aguarda teste de rotação no
+Moto G34.
+
+## 2026-09-08 — Stage 5.5A: base Gradle Android
+
+Foi criada a camada Gradle mínima em `android/gradle`, pinada em JDK
+17.0.12+7, Gradle 8.7 e AGP 8.5.2. Ela reutiliza o Manifest e `ProbeActivity`
+existentes, compila somente as fontes Java existentes quando um assemble for
+autorizado e faz staging de `libmain.so`, `librexruntime.so` e `libSDL3.so` já
+compiladas no cache. Não há `externalNativeBuild`, CMake ou Ninja.
+
+O wrapper e a configuração Gradle foram validados, sem assemble, compilação
+Java/C++ ou APK novo. O Manifest mantém package, Activity launcher, orientação,
+`configChanges`, permissões e SDKs atuais. Estado: **IMPLEMENTED, BUILD NOT
+RUN**. A Etapa 5 está **DEVICE VERIFIED**; próximo passo é autorizar
+`assembleDebug` para comparar o APK Gradle ao APK validado da Etapa 5.
+
+O `:app:assembleDebug` autorizado passou com JDK 17, Gradle 8.7 e AGP 8.5.2,
+sem CMake, Ninja ou recompilação de bibliotecas nativas. O APK em
+`android/gradle/app/build/outputs/apk/debug/app-debug.apk` tem 27.326.979 bytes
+e SHA-256 `56f2ede04154d33df8914c85e764417e4d76c44aabf4ed5f9004622e10faee05`.
+Ele contém as três bibliotecas ARM64 já validadas, preserva package, Activity
+launcher, landscape e `configChanges`; elas seguem comprimidas e o Manifest
+final declara `extractNativeLibs=true`, compatível com o APK Stage 5.
+
+Durante a primeira tentativa, antes do pin explícito de Build Tools 35, o AGP
+instalou Build Tools 34.0.0 e Platform Tools 37.0.1 no cache Android. Esses
+artefatos não foram usados nem removidos; nenhuma atualização de SDK foi feita
+depois do pin. Estado: **BUILD VERIFIED, DEVICE TEST REQUIRED**.
+
+## 2026-09-08 — Stage 5.5: launcher Compose inicial
+
+O launcher Kotlin/Compose foi adicionado sem carregar runtime nativo. Ele é a
+Activity launcher landscape e oferece HOME, GAME, GRAPHICS, SETTINGS e ABOUT;
+GAME, GRAPHICS e SETTINGS permanecem deliberadamente sem backend. ABOUT abre a
+`ProbeActivity` existente somente pela ação DIAGNOSTICS. O Probe preserva tema,
+orientação e `configChanges` e não é mais exportado nem launcher.
+
+Kotlin 1.9.24, Compose compiler 1.5.14, Compose BOM 2024.06.00 e
+activity-compose 1.9.0 foram pinados. O layout usa `WindowInsets.safeDrawing`,
+dp/sp, largura/altura disponíveis e navegação horizontal rolável para evitar
+assumir a densidade ou o formato do Moto G34.
+
+O `:app:assembleDebug` incremental gerou
+`android/gradle/app/build/outputs/apk/debug/app-debug.apk`, 35.962.828 bytes,
+SHA-256 `8b8e585c07685bbf06847ffeefb119ca50252726ffd3d0cf1c2bdfbbb06e4e01`.
+As bibliotecas `libmain.so`, `librexruntime.so` e `libSDL3.so` foram apenas
+reutilizadas; não houve CMake, Ninja ou compilação nativa. Estado: **BUILD
+VERIFIED, DEVICE TEST REQUIRED** para a UI do launcher.
+
+## 2026-09-08 — Stage 6A: arquitetura Game Image / XDVDFS
+
+O reader futuro será independente de paths: `GameImageReader` expõe tamanho
+`uint64_t` e leitura por offset com resultado e contagem de bytes. Leitura curta
+é EOF, nunca sucesso para metadata; overflow de `offset + size`, faixa fora da
+imagem, I/O e fonte não-seekable são erros distintos. `XdvdfsReader` consome
+somente esse contrato para detectar, listar, resolver paths e ler ranges.
+`MemoryGameImageReader` será usado apenas em testes.
+
+`DiscImageDevice` do ReXGlue fica como referência de formato, não como base
+direta: recebe um `std::filesystem::path`, faz mmap integral e procura o magic
+`MICROSOFT*XBOX*MEDIA` no sector 32 usando cinco offsets candidatos. Após isso,
+lê root sector/size e percorre entries. Esses offsets são compatibilidade do
+parser existente, não uma regra universal. O novo reader validará cada soma,
+multiplicação por sector, nome, faixa de diretório/arquivo, orçamento de
+entries/profundidade e ciclos antes de ler ou alocar.
+
+No Android, Stage 6D ligará `ACTION_OPEN_DOCUMENT`, permissão persistente e FD
+seekable a um `GameImageReader`; a ISO continuará fora do APK e será lida por
+range. O runtime atual monta somente `HostPathDevice`, portanto montar XDVDFS
+diretamente para execução futura requer uma extensão explícita do VFS pinado.
+Bloqueadores: definir os layouts XGD/XDVDFS aceitos sem offsets mágicos e validar
+seek/size nos providers SAF reais. Próximo passo: Stage 6B, sem SAF nem fixture.
+
+## 2026-09-08 — Stage 6B: core Game Image / XDVDFS
+
+`src/common` agora contém `GameImageReader`, `HostGameImageReader` e
+`XdvdfsReader`, sem Android, ReXGlue ou VFS runtime. O host reader abre somente
+leitura, usa tamanho de 64 bits e seeks/ranges sem mmap. O parser aceita apenas
+os cinco layouts candidatos já documentados pelo `DiscImageDevice`, valida magic
+e root, e lê metadata/diretórios/arquivos exclusivamente por `ReadAt`.
+
+Somas, multiplicações de sector, ranges, nomes, profundidade, entries e ciclos
+são limitados antes de leitura/alocação. Há um teste de contrato host sem
+fixture de disco em `src/common/tests`; CMake/Ninja incremental em
+`/tmp/project8-game-image-build` e CTest passaram. Nenhum código ReXGlue,
+patch, pin, Android ou runtime foi alterado. Estado: **BUILD VERIFIED, DEVICE
+TEST REQUIRED**. Próximo passo: Stage 6C, fixture sintética e corrupção/bounds.
+
+## 2026-09-08 — Stage 6C: fixture sintética e robustez XDVDFS
+
+Uma fixture inteiramente em memória contém apenas `default.xex` artificial,
+`hello.txt` e `data/test.bin`; `MemoryGameImageReader` é test-only. Os dois
+grupos CTest cobrem detecção/listagem/path/ranges e imagem vazia ou truncada,
+magic, root, sectors/ranges, entries, ciclos, limites de diretório/profundidade
+e leituras curtas, I/O e fonte não-seekable. Ambos passaram no build incremental
+host. ASan/UBSan também passaram; LeakSanitizer não é executável sob ptrace neste
+ambiente, por isso os testes instrumentados usaram `detect_leaks=0`.
+
+Nada da fixture, corpus ou reader de memória integra o APK, e nenhum dado real
+do jogo foi usado. Nenhum código ReXGlue, patch, pin, Android ou runtime foi
+alterado. Estado: **TEST/HOST VERIFIED, DEVICE TEST NOT APPLICABLE**. Próximo
+passo: Stage 6D, reader Android por SAF/FD seekable e validação no aparelho.
+
+## 2026-09-08 — Stage 6D.1: SAF e bridge Game Image
+
+O launcher usa `ACTION_OPEN_DOCUMENT`, tenta persistir somente a permissão de
+leitura e mantém o URI selecionado. O `ParcelFileDescriptor` é destacado para
+um reader Android que verifica seekability/tamanho e lê por `pread`; nenhuma ISO
+é copiada, mapeada inteira ou extraída. A ponte JNI usa o `XdvdfsReader` para
+detectar a imagem, obter root e localizar `default.xex`, retornando somente
+estado estruturado ao launcher. Não executa XEX, codegen, gameplay ou VFS.
+
+Logs são limitados a `P8_IMAGE_OPEN`, `P8_IMAGE_SIZE`, `P8_IMAGE_SEEKABLE`,
+`P8_XDVDFS_DETECT`, `P8_XDVDFS_ROOT` e `P8_DEFAULT_XEX`. O build incremental
+ARM64 compilou os novos fontes e relinkou `libmain.so`; `assembleDebug` gerou
+`android/gradle/app/build/outputs/apk/debug/app-debug.apk` (SHA-256
+`4592e493ff2635591b054a03e4bb5e6e86f3464964943df20e2f5dce81d3da21`). O Manifest mantém
+`LauncherActivity` landscape como launcher e `ProbeActivity` intacta.
+
+O wrapper Gradle baixou a distribuição já pinada 8.7 para dois caches locais
+antes do assemble offline, embora a etapa não previsse download; não houve
+download de SDK, NDK, CMake, ReXGlue ou dependência Maven. Estado:
+**BUILD VERIFIED, DEVICE TEST REQUIRED**. Próximo passo: testar no Moto G34 com
+uma imagem legalmente possuída, incluindo provider seekable e erro controlado.
+
+## 2026-09-08 — Stage 7: identidade do XEX na ISO
+
+O caminho DEVICE VERIFIED da Stage 6 agora mantém a ISO no provider SAF e lê
+`default.xex` somente por ranges de 64 KiB. Ele calcula tamanho `uint64_t` e
+SHA-256 incremental, sem extrair/copiar o arquivo ou iniciar o runtime. O
+cabeçalho opcional `EXECUTION_INFO` é lido pelos offsets/layout já definidos em
+ReXGlue para registrar, quando presente, Title ID, Media ID, version e base
+version; não há carregamento de módulo ou guest memory.
+
+`supported_dumps.h` continua sendo a única identidade esperada: SHA-256
+`cfc732340e55defda400e25f03231aa9bb65fd9545b618212f69a4952384a5dd`, tamanho
+8237056 e Title ID `0x415607DD`. Só esse hash retorna `SUPPORTED_MATCH`; Title
+ID suportado com hash diferente retorna `KNOWN_DIFFERENT_BUILD`, e qualquer
+outro resultado retorna `UNKNOWN_UNVERIFIED`. A página GAME mostra apenas a
+identificação e `Build: Supported` ou `Build: Unverified`.
+
+O build host incremental/CTest passou. O build ARM64 incremental recompilou
+`xex_identity.cpp`, recompilou a ponte JNI e relinkou `libmain.so` com Ninja
+`-j2`. `assembleDebug --offline` não pôde completar porque o cache local não
+tem os artefatos Kotlin/Compose pinados; nenhum download foi tentado. Estado:
+**NATIVE BUILD VERIFIED, APK/DEVICE TEST REQUIRED**. Próximo passo: disponibilizar
+o cache Gradle já provisionado ou autorizar explicitamente dependências, depois
+instalar o APK e confirmar os logs/resultado no Moto G34.
+
+## 2026-09-08 — Stage 7 APK: Gradle provisioning
+
+Com JDK 17.0.12+7, Gradle 8.7 e AGP 8.5.2 já pinados, `:app:assembleDebug`
+preencheu somente o cache Maven/Gradle ausente e terminou com **BUILD
+SUCCESSFUL**. Não houve CMake, Ninja, `externalNativeBuild` ou recompilação
+nativa: `stageNativeLibs` apenas empacotou as bibliotecas existentes.
+
+`android/gradle/app/build/outputs/apk/debug/app-debug.apk` tem 59.662.386 bytes
+e SHA-256 `ebe640617aec480b8c76bc90c890c4410742e56a2f92fd3f3fc71c4de5ae7924`.
+Inspeção do APK confirmou `libmain.so`, `librexruntime.so`, `libSDL3.so` ARM64 e
+`LauncherActivity` launchable. Estado: **APK BUILD VERIFIED, DEVICE TEST
+REQUIRED**. Próximo passo: instalar no Moto G34 e repetir o fluxo SAF da Stage 7.
+
+## 2026-09-08 — Stage 7 / Stage 8A: device result e auditoria de codegen
+
+O teste físico informado no Moto G34 confirmou Stage 7: após selecionar a ISO
+real, GAME mostrou `Executable identified` e `Build: Supported`. Estado:
+**Stage 7 COMPLETE / DEVICE VERIFIED**.
+
+O pipeline existente é `rexglue codegen <manifest.local.toml>`. O manifesto
+requer um `game_root` existente e `default.xex` dentro dele; o `ProjectRecompiler`
+cria `Runtime` host em `tool_mode`, monta esse root, faz `LoadXexImage`, analisa
+o módulo e gera C++ em `generated/default`. GPU não é iniciada no tool mode.
+Para entradas/config/SDK fixos, o stamp usa fingerprint e a partição é estável;
+as unidades geradas são `thps_p8_{pch,funcs,init}.h`, `thps_p8_{init,register}.cpp`,
+pares `thps_p8_funcs.N.h`/`thps_p8_recomp.N.cpp`, `sources.cmake`,
+`partition.json`, stamps e depfile. O número/tamanho das partições só pode ser
+conhecido após análise do XEX. Nada disso entra no Git.
+
+`config/generated/rexglue.cmake` inclui `sources.cmake`; `rexglue_setup_target`
+cria o OBJECT target `thps_p8_recomp`, liga `rex::runtime` e o agrega em
+`thps_p8`. O build Android futuro precisa estender esse target do jogo, usando
+o `rexglue` host nativo para codegen e compilando as fontes geradas para ARM64.
+O runtime futuro permanece separado: ISO/XDVDFS para dados, código ARM64
+gerado, e `Runtime::Setup(PPCImageConfig)` seguido de carregamento do módulo.
+
+Stage 8B deve exportar somente `default.xex` pela XDVDFS Android para, por
+exemplo, `/workspaces/.project8-build-cache/user-content/project8/disc/default.xex`,
+transferi-lo ao Codespace e conferir novamente o SHA-256 antes de criar o
+manifesto local. A ISO inteira, o XEX e a saída gerada permanecem fora do Git,
+APK e release. A única build aceita é a tabela compartilhada: tamanho 8237056,
+SHA-256 `cfc732340e55defda400e25f03231aa9bb65fd9545b618212f69a4952384a5dd`,
+Title ID `0x415607DD`; Media ID não participa do gate.
+
+Blockers antes de boot Android: obter/validar o XEX no Codespace; o runtime
+Android ainda não monta XDVDFS como `game:/`; e `Runtime::Setup`, memória guest,
+fault handlers e carregamento de módulo não foram testados no aparelho. Nenhum
+codegen ou build foi executado nesta auditoria. Próximo passo: Stage 8B; depois
+8C codegen host, 8D compilação ARM64/inclusão, 8E runtime/PLAY real.
+
+## 2026-09-08 — Stage 8B.1: export debug de default.xex
+
+A página GAME debug mostra `EXPORT DEFAULT.XEX` somente quando a validação
+atual é `SUPPORTED_MATCH`/`Build: Supported`; release builds não exibem a ação.
+Ela abre `ACTION_CREATE_DOCUMENT` com nome sugerido `default.xex`, sem caminho
+fixo ou permissão ampla. A ponte reabre a ISO por FD, revalida o XEX contra a
+tabela compartilhada, lê somente o range do arquivo em chunks de 64 KiB e grava
+o FD escolhido pelo usuário. O hash incremental e o tamanho copiado precisam
+igualar a build suportada antes de sucesso; falhas retornam erro e não sucesso.
+
+Logs são somente `P8_XEX_EXPORT_START`, tamanho, SHA-256 e resultado. O XEX
+nunca é incorporado ao APK ou Git, e a futura release não depende da ação.
+Build host/CTest passou; Ninja ARM64 incremental recompilou
+`xex_identity.cpp`/JNI e relinkou `libmain.so`; Gradle offline gerou o APK.
+Estado: **IMPLEMENTED / BUILD VERIFIED / DEVICE TEST REQUIRED**. Stage 8B não
+está completo. Próximo passo: testar exportação física e SHA-256 no Moto G34.
+
+## 2026-09-08 — Stage 8B.2: XEX privado para codegen
+
+O export debug foi realizado no Moto G34. A cópia temporária recebida no
+workspace foi um arquivo regular de 8237056 bytes, SHA-256
+`cfc732340e55defda400e25f03231aa9bb65fd9545b618212f69a4952384a5dd`, Title ID
+`0x415607DD` e Media ID `0x2CB96AE4`: **SUPPORTED_MATCH**. Ela foi movida, sem
+cópia residual no repositório, para
+`/workspaces/.project8-build-cache/user-content/project8/disc/default.xex` e
+tamanho/hash foram conferidos novamente no destino.
+
+Stage 8C deverá usar uma cópia local do manifesto com `game_root` apontando ao
+diretório privado e `entrypoint.file_path` a esse XEX; não houve codegen ou
+build. Estado: **Stage 8B COMPLETE / BUILD VERIFIED**. Próximo passo: Stage 8C
+somente quando o codegen host for autorizado.
+
+## 2026-09-08 — Stage 8C: codegen host bloqueado
+
+O XEX privado foi conferido antes da tentativa: 8237056 bytes e SHA-256 esperado.
+Foi criada apenas a cópia local do manifesto no cache, apontando `game_root` e
+`entrypoint.file_path` ao conteúdo privado e a saída ao cache privado. Não há
+XEX no repositório.
+
+Não existia `rexglue` host materializado. A configuração incremental do target
+host `rexglue` com Clang e Ninja `-j2` parou antes da compilação: o checkout
+pinado força `rexui` Linux, que requer os pacotes `x11-xcb` e `wayland-client`,
+ausentes no ambiente. Tracy/tests e extensões SDL opcionais foram desligados
+somente no build privado, mas não removem essa dependência obrigatória de
+`src/ui/CMakeLists.txt`. Não houve download, mudança de ReXGlue, codegen ou
+saída gerada parcial.
+
+Estado: **Stage 8C BLOCKED**. Próximo passo: autorizar provisionar as
+dependências host ausentes ou fornecer um `rexglue` host compatível já
+materializado; então rodar o manifesto local sem alterar o XEX.
+
+## 2026-09-08 — Stage 8C: retomada após reinício do Codespace
+
+O XEX privado, o manifesto local e o diretório incremental `host-clang`
+persistiram. O XEX continua com 8237056 bytes e SHA-256
+`cfc732340e55defda400e25f03231aa9bb65fd9545b618212f69a4952384a5dd`:
+`SUPPORTED_MATCH`. `libx11-xcb-dev` e `libwayland-dev` também persistiram.
+
+`ninja -C host-clang -j2 rexglue` foi retomado sem limpeza nem reconfiguração;
+aproveitou o estado existente, mas parou ao compilar `map_parser.cpp` porque
+Clang 18 com a libstdc++ disponível não expõe `std::expected` em C++23. O teste
+mínimo confirma que GCC 13 o expõe. Um novo diretório privado `host-gcc13` foi
+tentado sem tocar em `host-clang`, mas o CMake do pin recusa GCC explicitamente
+e exige Clang/AppleClang. Não houve codegen, alteração de fonte ReXGlue, build
+Android, nem alteração do XEX ou manifesto.
+
+Estado: **Stage 8C BLOCKED**. Próximo passo: autorizar um Clang compatível com
+o C++23 exigido pelo pin (ou um host ReXGlue já materializado); não substituir
+o compilador no diretório `host-clang` nem alterar fontes do SDK.
+
+## 2026-09-08 — Stage 8C: codegen host concluído
+
+O host compatível foi configurado em
+`/workspaces/.project8-build-cache/rexglue-build/host-clang19-libstdcxx`,
+separado dos caches anteriores, com Clang 19.1.1, libstdc++ 13, C++23 e a flag
+host já validada `-mssse3`. O teste mínimo dessa combinação compilou e executou
+`std::expected` e `std::from_chars` de ponto flutuante. O pin exige Clang 18+
+e rejeita GCC; Clang 18/libstdc++ não expunha `std::expected`, enquanto
+Clang 18/libc++ resolveu esse recurso mas não fornecia o `from_chars` de ponto
+flutuante usado pelo pin. Foram provisionados `libc++-18-dev`,
+`libc++abi-18-dev` e Clang 19 após autorização. O `rexglue` host concluiu com
+Ninja `-j2`; os avisos de compilação não interromperam o target.
+
+O codegen real executou o manifesto privado e confirmou Title ID `415607DD` e
+Media ID `2CB96AE4`. Concluiu Register, Scan, Discover, GapFill, Merge,
+Validate e Write, com 237 arquivos escritos, zero inalterados/deletados e zero
+módulos já atualizados. A saída privada é
+`/workspaces/.project8-build-cache/user-content/project8/generated/default`:
+240 arquivos incluindo metadata/stamps, 115 pares de
+`thps_p8_funcs.N.h`/`thps_p8_recomp.N.cpp` e 125541470 bytes. `sources.cmake`,
+`thps_p8_pch.h`, `thps_p8_funcs.h`, `thps_p8_init.h`, `thps_p8_init.cpp` e
+`thps_p8_register.cpp` existem. Nenhuma fonte ReXGlue, XEX, manifesto privado,
+APK ou caminho Android foi alterado; nenhum output de codegen apareceu no Git.
+
+Estado: **Stage 8C COMPLETE / HOST BUILD VERIFIED**. Próximo passo: Stage 8D
+somente com autorização explícita para compilar e integrar as unidades geradas
+para ARM64; isso permanece distinto de validação em aparelho.
+
+## 2026-09-08 — Stage 8D: integração ARM64 do código gerado
+
+`android/probe/CMakeLists.txt` aceita `P8_GENERATED_DIR` como cache path
+privado, valida metadata/stamps e monta `thps_p8_recomp` como OBJECT target a
+partir de `sources.cmake`; os objetos entram em `libmain.so`, que liga
+`rexruntime`. O target declara também `libucontext`, pois o PCH gerado inclui
+`rex/thread/fiber.h` e esse include não é propagado por `rex::runtime` ao
+OBJECT target. Não houve alteração de ReXGlue nem do código gerado.
+
+O Ninja incremental `-j2` no NDK r27c compilou as 115 unidades
+`thps_p8_recomp.N.cpp`, `thps_p8_init.cpp` e `thps_p8_register.cpp`, e linkou
+`/workspaces/.project8-build-cache/rexglue-build/native/libmain.so` (122321376
+bytes). `file`/`readelf` confirmam ELF64 AArch64. As únicas dependências
+dinâmicas são `librexruntime.so`, SDL e bibliotecas Android; não há símbolos
+ReX/guest indefinidos. Nenhum APK, codegen, execução, Runtime::Setup, PLAY ou
+alteração de conteúdo privado ocorreu. Estado: **Stage 8D COMPLETE / NATIVE
+BUILD VERIFIED**; teste em aparelho permanece fora desta etapa.
+
+## 2026-09-08 — Stage 8E: bloqueio de VFS para ISO SAF
+
+A inspeção do pin confirma que o caminho de runtime exige
+`PathConfig::game_data_root` como diretório: `ReXApp::ConstructRuntime` e o
+dump gate recusam qualquer outro tipo, e `Runtime::SetupVfs` monta somente um
+`HostPathDevice`. O leitor Android validado recebe um FD SAF e fornece leitura
+XDVDFS limitada, mas não é um `rex::filesystem::Device`. O único
+`DiscImageDevice` do pin recebe um path e usa `MappedMemory::Open` para mapear
+a imagem inteira, incompatível com o requisito de não mapear a ISO inteira.
+
+Portanto não há ponte de VFS existente que possa iniciar o runtime com a ISO
+externa sem cópia/extração/mapeamento integral. Não foi criado PLAY falso,
+Activity de jogo, persistência que habilitasse PLAY, APK ou build; nenhuma
+fonte ReXGlue ou conteúdo privado foi alterado. O SDL input driver existente é
+o candidato para gamepad, mas permanece sem teste em aparelho. Estado:
+**Stage 8E BLOCKED**. Próximo passo: autorizar uma ponte VFS `Device` baseada
+no leitor FD/XDVDFS (ou fornecer hook equivalente já suportado pelo pin).
+
+## 2026-09-08 — Stage 8E: hook VFS por FD validado
+
+O patch `0020-android-fd-vfs-hook.patch` foi materializado no checkout pinado e
+listado como o vigésimo patch da série. Ele acrescenta uma factory opt-in de
+`filesystem::Device` a `RuntimeConfig` e hooks de validação em `ReXApp`; sem a
+factory, o caminho desktop continua montando o mesmo `HostPathDevice` e mantendo
+as validações de diretório/arquivo existentes.
+
+Após a interrupção do Codespace, o Ninja host recuperou o seu log de dependências
+truncado e relinkou incrementalmente somente o grafo de `rexruntime` com `-j2`.
+O artefato `out/linux-amd64/librexruntime.so` foi registrado às 18:51:48 UTC,
+com 15.283.344 bytes. O Ninja Android no cache `native`, também para somente
+`rexruntime -j2`, retornou `no work to do`. Não houve clean, reconfiguração,
+codegen, remoção de cache nem acesso ao conteúdo privado.
+
+O próximo trabalho é implementar o `filesystem::Device` somente-leitura que
+converte o leitor FD/XDVDFS já validado em `Entry`/`File`, e conectar uma nova
+abertura do URI SAF persistido a essa factory. Isso continua BUILD VERIFIED
+somente para o hook; runtime guest, PLAY e teste em aparelho ainda não foram
+executados.
+
+## 2026-09-08 — Stage 8E: adapter XDVDFS inicial
+
+`android/probe/android_xdvdfs_device.{h,cpp}` adiciona um `Device` somente-leitura
+que possui o `GameImageReader` da sessão (e, portanto, o FD SAF), abre o
+`XdvdfsReader`, constrói a árvore limitada de `Entry` a partir dele e entrega
+`File::ReadSync` por range. Escrita e alteração de tamanho retornam acesso
+negado; não há cópia, extração, mmap integral ou buffer de arquivos grandes.
+O Ninja incremental ARM64 `-j2 main` compilou o adapter e relinkou `libmain.so`.
+
+Ainda não foi conectado a PLAY: o SDK Android declara registro de apps em
+biblioteca, mas o seu runner SDL registrado não é incluído no `rexruntime` e
+não seleciona uma criação registrada. A continuação requer o patch sequencial
+0021, pequeno e específico, para expor esse runner sem alterar 0020, seguido
+da Activity de gameplay e da abertura de um FD novo do URI persistido. Nenhum
+APK novo ou teste físico foi gerado nesta atualização.
+
+## 2026-09-08 — Stage 8E: logging privado Android
+
+O primeiro boot físico abortou antes de `Runtime::Setup`: o tombstone mostra
+`std::filesystem::filesystem_error` em `create_directories("/system/bin/logs")`.
+O caminho vinha de `ReXApp::SetupEnvironment`, que deriva logs e TOML de
+`GetExecutableFolder`; no Android o executável SDL está em `/system/bin`.
+
+O novo patch `0022-android-private-logging-root.patch` usa
+`SDL_GetAndroidInternalStoragePath()` somente no Android para o diretório de
+logs e o TOML, sem package fixo, armazenamento externo ou permissões. Se SDL
+não disponibilizar o diretório privado, a inicialização falha antes de tentar
+escrever em `/system/bin`; desktop continua usando o diretório do executável.
+O patch reverteu em `git apply --reverse --check`; a série de 22 patches e
+`git diff --check` passaram.
+
+Ninja ARM64 incremental recompilou `rex_app.cpp` e relinkou `libmain.so`:
+136409984 bytes, SHA-256
+`9349852431a3b751f86d9f140c64502a1048125c0c97a7357df0e4a3d2bbc341`.
+`assembleDebug` passou; o APK é
+`android/gradle/app/build/outputs/apk/debug/app-debug.apk`, 82058707 bytes,
+SHA-256 `43453260706e021c258e16278e3d646c5686be4c348d5170563844ce4cfb4174`.
+O `libmain.so` extraído do APK tem o mesmo SHA-256. Estado: **BUILD VERIFIED,
+DEVICE TEST REQUIRED** para repetir o boot após o ponto de logging.
+
+## 2026-09-08 — Stage 8E: diagnóstico do handoff SAF para PLAY
+
+O APK de diagnóstico registra a URI recebida pela `GameplayActivity`, início,
+resultado e exceção de `openFileDescriptor`, e o FD destacado. A preparação
+nativa agora registra `P8_GAME_SESSION_FAIL reason=` distinto para adoção do
+FD, reabertura XDVDFS, procura de `default.xex`, identidade do XEX, build não
+suportado e sessão existente; o caminho bem-sucedido registra
+`P8_GAME_SESSION_READY`.
+
+`ninja -j2 main` incremental passou. A nova `libmain.so` ARM64 é de
+2026-09-08 20:42:22 UTC, 136415792 bytes, SHA-256
+`c279507ebfb1bdec3bc8adfb3aac75c8b9d22f1649b954699d8c38a216bd4388`.
+`assembleDebug` incremental passou; o APK é
+`android/gradle/app/build/outputs/apk/debug/app-debug.apk`, 82059602 bytes,
+SHA-256 `e6355ae29978bdf677de398d88379dc6e7cfc5087b6407a9212254fdd8efe796`.
+Sua `libmain.so` extraída tem o mesmo SHA-256. Estado: **BUILD VERIFIED,
+DEVICE TEST REQUIRED** para um PLAY físico e coleta dos marcadores
+`Project8Game`.
+
+## 2026-09-08 — Stage 8E: log persistente de gameplay
+
+Cada sessão de `GameplayActivity` cria, via `MediaStore.Files` scoped storage,
+um texto em `Documents/Project8/Project8-<timestamp>.log.txt`; não usa caminho
+absoluto, permissões amplas, root ou adb. Se o provider não puder criar o
+documento, a Activity grava no diretório privado e conserva o erro de criação
+no valor `GAMEPLAY_LOG_PATH`, incluído no Export Diagnostics.
+
+Eventos Java e C++ passam pelo mesmo stream da sessão. A ponte JNI cacheia a
+classe da Activity e chama `appendNativeGameplayLog` de forma síncrona; cada
+linha inclui timestamp, pid, tid, tag e mensagem e sofre `flush()` imediato.
+Assim os marcos de SAF e de sessão sobrevivem a uma queda subsequente até o
+último flush concluído. Não houve mudança de VFS, ISO, runtime, renderer ou
+fontes geradas.
+
+`ninja -j2 main` e `assembleDebug` incrementais passaram. APK:
+`android/gradle/app/build/outputs/apk/debug/app-debug.apk`, 82093822 bytes,
+mtime 2026-09-08 21:01:18 UTC, SHA-256
+`4b7be582fa6efc4d932e316b1143c5947421fcce4f55cfee35a6be9bd53f99b6`.
+
+## 2026-09-09 — Stage 8E: arquitetura de instalação extraída (implementada, sem build)
+
+O modo de gameplay direto da ISO foi removido do caminho normal Android. A
+seleção SAF continua usando `ACTION_OPEN_DOCUMENT`, a permissão de leitura
+persistível e um `ParcelFileDescriptor` destacado, mas esse FD agora é usado
+somente pelo instalador. `AndroidFdGameImageReader` e `XdvdfsReader` enumeram
+a árvore inteira, preservam diretórios vazios, copiam os arquivos para
+`game-installing/` em armazenamento app-specific (`getExternalFilesDir("game-data")`,
+com fallback para `filesDir`), e enviam bytes realmente copiados para a UI.
+Não há `MANAGE_EXTERNAL_STORAGE`, caminho `/sdcard` ou caminho de dados de
+outro processo.
+
+Antes da cópia, o instalador identifica `default.xex`, exige Title ID
+`0x415607DD` e um tamanho/SHA-256 da tabela de dumps suportados, enumera a
+árvore com limites e verifica espaço livre mais 128 MiB de margem. Depois da
+cópia, ele revalida o `default.xex` extraído contra a mesma tabela. Somente
+então a Activity tenta mover `game-installing/` para `game/` no mesmo pai com
+`ATOMIC_MOVE` (fallback normal quando o filesystem não oferece rename atômico).
+Uma instalação existente nunca é substituída: remoção é explícita. Na abertura,
+qualquer staging restante é removido e uma `game/` incompleta é revalidada e
+removida fora da UI thread; `game-installing/` nunca é reconhecida como jogo.
+
+`PLAY` passa apenas o root instalado para `GameplayActivity`; não reabre URI,
+FD ou ISO. A sessão valida esse root, e `AndroidThpsP8App` o atribui a
+`PathConfig::game_data_root` sem `game_device_factory`. No ReXGlue pinado,
+isso monta o root em `\\Device\\Harddisk0\\Partition1` via
+`HostPathDevice` e registra `game:` e `d:`. `AndroidXdvdfsDevice`, inclusive o
+fix Android de handles de diretório já comprovado, permanece no código para
+rollback/diagnóstico, mas fica fora do caminho de PLAY.
+
+Referências estudadas localmente: Buku/Skate3-Mobile faz SAF/FD, inspeção da
+árvore, `game-installing`, verificação, espaço com headroom, progresso em
+worker e rename final; o SKATE-3-ANDROID-PORT mais recente confirma o padrão
+de instalação completa e runtime com root local/`HostPathDevice`. A
+implementação Project 8 reutiliza esse desenho sem copiar código e aproveita
+o leitor XDVDFS já existente.
+
+A investigação anterior permanece preservada para comparação após o primeiro
+teste da nova arquitetura: o VFS direto tinha corrigido a rejeição de handles
+de diretório e eliminado o fault `NULL+0xC0`; o fault seguinte foi mapeado
+deterministicamente para `sub_8239C960` (guest `0x8239C960`, relative host PC
+`0xD8243C`), em leitura de `NULL+0x18` por vptr nulo. Não há evidência de que
+esse segundo fault seja VFS; ela não será retomada a menos que persista com o
+novo `HostPathDevice`.
+
+Estado: **IMPLEMENTED, NOT BUILT; BUILD AND DEVICE TEST REQUIRED**. O próximo
+passo, após autorização, é uma única cadeia incremental ARM64 e `assembleDebug`.
+
+## 2026-09-08 — Stage 8E: inicialização Android de memória
+
+Dois testes físicos chegaram a `P8_RUNTIME_SETUP_MEMORY_BEGIN` e retornaram
+`memory init failed`. A inspeção do pin mostra que, em Android API 26+, a arena
+guest usa o ponteiro carregado por `rex::memory::AndroidInitialize()` para
+`ASharedMemory_create`; sem a chamada, o fallback `/dev/ashmem` falha para o
+target atual e `Memory::Initialize()` devolve falso.
+
+O entrypoint SDL em library mode agora chama somente
+`rex::memory::AndroidInitialize()` uma vez por processo, imediatamente antes
+de `RunWindowedApp` no caminho de gameplay. `filesystem::AndroidInitialize()`
+é vazio e `thread::AndroidInitialize()` só resolve `pthread_getname_np`, logo
+não são pré-requisitos comprovados do heap e não foram adicionados. Desktop e
+Diagnostics não passam por essa chamada. O patch `0023` permanece limitado ao
+trace opt-in de Runtime::Setup.
+
+Ninja e `assembleDebug` incrementais passaram. `libmain.so` é ELF AArch64,
+136517952 bytes, mtime 2026-09-08 21:24:14 UTC, SHA-256
+`e0f288406b21fd42fa0dc20e128fcf6465f0016458088c5e67972a4680f48e72`.
+O APK tem 82099350 bytes, mtime 2026-09-08 21:24:29 UTC, SHA-256
+`885f36bf0d9a6db8f4feb0dba5d619325d31e3409b99ed5221d9480e719429ca`;
+sua lib extraída tem o mesmo hash.
+
+## 2026-09-08 — Stage 8E: integração do plugin Xenos ARM64
+
+O frontend Android passa explicitamente `gpu_plugin=xenos`. O patch `0024`
+consulta `ApplicationInfo.nativeLibraryDir` pela Activity SDL para procurar o
+plugin no diretório ABI do APK; desktop continua usando o diretório do
+executável. A ausência de `librexgpu-xenos.so` permanece erro explícito no
+loader, sem fallback para renderer vazio.
+
+O primeiro link ARM64 do plugin revelou duas dependências reais: `libucontext`
+e o único registry de performance compartilhado. `0024` liga `libucontext`
+diretamente a `rexgpu-xenos`; o CMake Android habilita perf counters para que
+`counter.cpp` pertença a `librexruntime.so`, removendo a cópia privada anterior
+de `libmain.so`. Isso evita símbolos indefinidos no link do plugin e evita dois
+registries globais no processo.
+
+Regeneração incremental da árvore existente
+`/workspaces/.project8-build-cache/rexglue-build/native` usou NDK r27c,
+`arm64-v8a`, API 26 e Release; não houve clean nem codegen. `main` e
+`rexgpu-xenos` compilaram e linkaram. Ambos os ELF são AArch64. O
+`assembleDebug` incremental offline, com JDK 17.0.12+7 e SDK Android do cache,
+empacotou `lib/arm64-v8a/libmain.so` e
+`lib/arm64-v8a/librexgpu-xenos.so`; os SHA-256 extraídos conferem com as
+bibliotecas recém-produzidas.
+
+APK: `android/gradle/app/build/outputs/apk/debug/app-debug.apk`, 105871252
+bytes, mtime 2026-09-08 22:01:44 UTC, SHA-256
+`7e798d7d855ce0d58c67e63558c28dd95d358496b762207d6036cee26e3a3137`.
+Os logs persistentes em `Documents/Project8` permanecem o artefato para o
+próximo teste físico. Estado: **BUILD VERIFIED, DEVICE TEST REQUIRED**.
+
+## 2026-09-08 — Stage 8E: roots privados para shader storage
+
+O tombstone físico confirmou que o renderer Xenos alcançou
+`VulkanPipelineCache::InitializeShaderStorage`, mas abortou em
+`create_directories("/data/.local")`. A causa é o fallback POSIX de
+`GetUserFolder()`: no processo Android, `HOME` é `/data`, portanto o default
+desktop produz `/data/.local/share/<app>/cache`.
+
+O patch `0025-android-private-runtime-cache-roots.patch` limita a alteração ao
+Android. Dados persistentes de runtime usam `SDL_GetAndroidInternalStoragePath`
+(`filesDir/<app>`), e shader/pipeline storage usa `SDL_GetAndroidCachePath`
+(`cacheDir/shaders/...` e `cacheDir/shaders/local/...`). Se uma API SDL não
+fornecer o diretório privado, `SetupEnvironment` falha antes de qualquer
+tentativa de escrita; nenhum `filesystem_error` é ocultado e o cache permanece
+habilitado. Os branches desktop, incluindo os overrides XDG/HOME e cvars,
+ficaram inalterados. Configuração e logs internos já usam `filesDir`; os logs
+de diagnóstico em `Documents/Project8` não participam destes roots.
+
+A série tem 25 patches, passa em `git diff --check` e o `0025` reverte sobre o
+checkout pinado. Regeneração e Ninja incrementais ARM64 passaram, com
+`libmain.so` e `librexgpu-xenos.so` AArch64. `assembleDebug` offline passou e
+o APK contém ambas em `lib/arm64-v8a/`; hashes extraídos conferem com os ELF
+produzidos. APK:
+`android/gradle/app/build/outputs/apk/debug/app-debug.apk`, 151933819 bytes,
+mtime 2026-09-08 22:21:06 UTC, SHA-256
+`d6bd09a6c739aee3287c2b64cc68c9909ca6052016ab298d913e64bf864547e3`.
+Estado: **BUILD VERIFIED, DEVICE TEST REQUIRED**.
+
+## 2026-09-08 — Stage 8E: captura do primeiro guest fault
+
+O patch 0028-android-first-unhandled-guest-fault.patch transporta o PC
+ARM64 de arch::Exception pelo callback MMIO até Memory e registra somente
+uma ocorrência Android no logger privado, preservando return false e o
+comportamento de fault não tratado. O marcador inclui host PC, endereços
+guest/host, thread e tipo de acesso; guest PC permanece indisponível nesse
+ponto.
+
+O Ninja incremental ARM64 concluiu libmain.so e atualizou
+librexgpu-xenos.so; ambos são AArch64. O assembleDebug offline produziu
+um único APK válido contendo somente lib/arm64-v8a/, incluindo os marcadores
+0027 em libmain.so e 0028 em librexruntime.so.
+
+APK: android/gradle/app/build/outputs/apk/debug/app-debug.apk, 129731277
+bytes, mtime 2026-09-08 23:48:50 UTC, SHA-256
+dd7e6a75f8b4be03d1274bbd45a0b5f91939b478ccf27f75ff99badd5db92dbc.
+Estado: BUILD VERIFIED, DEVICE TEST REQUIRED. O próximo teste físico deve
+exportar Diagnostics para obter P8_FIRST_UNHANDLED_GUEST_FAULT e mapear o
+host PC à função recompilada.
+
+## 2026-09-08 — Stage 8E: auditoria estática de storage e lançamento (sem APK)
+
+`P8_ENTRYPOINT_READY` vem de `AndroidThpsP8App::OnPostSetup`, logo após
+`Runtime::Setup` e `LoadXexImage`; ele precede `ReXApp::LaunchModule`, a
+callback diferida da UI, `PrepareModuleLaunch`, shader storage e
+`Main XThread::Resume`. Portanto não prova que o entrypoint guest, game main
+ou comandos GPU do jogo começaram. A callback é acordada pelo evento SDL
+registrado em `SDLWindowedAppContext`; não há bypass Android estático. O
+tombstone anterior prova apenas que uma execução alcançou shader storage.
+
+`AndroidXdvdfsDevice` mantém ownership do FD e suporta enumeração, resolução
+case-insensitive e leituras randômicas; o runtime já usou o fallback de leitura
+sem mmap para carregar `default.xex`. Ele não oferece mmap, timestamps ou
+escrita de HostPath, mas não há evidência de que o caminho pós-entrypoint exija
+essas capacidades. ISO direta continua estruturalmente suficiente; extração
+não é justificada por esta tela preta.
+
+O crescimento de dados privados tem causa concreta: logging Android criava um
+novo `thps_p8_NNN.log` por execução em `filesDir/logs`, cada um podendo manter
+20 rotações de 5 MiB. O patch `0026` fixa um único log privado e limita Android
+a 1 MiB x 3 rotações; desktop não muda. `GameplayActivity` também criava um
+log automático em `Documents/Project8` via MediaStore, explicando os itens
+“External”; agora usa somente `filesDir/logs`. A exportação selecionada pelo
+usuário em `ProbeActivity` permanece explícita.
+
+Nenhum native build ou APK foi criado nesta rodada: não há causa estática
+suficiente para a tela preta depois do marcador prematuro, portanto outro APK
+não seria um teste orientado por evidência.
+
+## 2026-09-09 — Stage 8E: atualização final da arquitetura extraída (sem build)
+
+A entrada anterior de instalação extraída é o estado atual e substitui a
+conclusão histórica de que ISO direta era suficiente. A Activity do launcher
+também retém sua instância em mudanças de configuração enquanto uma instalação
+está ativa, impedindo que uma recriação apague `game-installing/` de um worker
+em progresso. A remoção agora confirma que toda a árvore foi apagada antes de
+mostrar sucesso. Nenhum build, APK ou teste em aparelho foi feito nesta rodada.
+
+## 2026-09-09 — Stage 8E: build incremental da arquitetura extraída
+
+Com autorização explícita, a cadeia incremental ARM64 reutilizou o checkout
+pinado e os toolchains existentes. `ninja -C
+/workspaces/.project8-build-cache/rexglue-build/native -j2 main rexgpu-xenos`
+passou; o CMake revalidou a árvore e recompilou os alvos necessários, sem
+clean nem codegen. `./gradlew --offline :app:assembleDebug` também passou após
+configurar `android/gradle/local.properties` para o SDK já existente no cache.
+
+APK: `android/gradle/app/build/outputs/apk/debug/app-debug.apk`, 142129179
+bytes, SHA-256
+`763096eff12df7785c159b35ef1df2d99c4ec5b5d65caa491bef6a1bc2b10a64`.
+`libmain.so` é AArch64, 136807392 bytes, SHA-256
+`d15a8a74f7fe7778cc01d155db4ffdd3ab4dcf87370bff6690b598ee802cdd85`;
+`librexgpu-xenos.so` é AArch64, 55135608 bytes, SHA-256
+`e782714ec66d0e1a105e6cc1ca764d538154dec5e613f50e14edf360a7689e83`.
+Os hashes das duas bibliotecas extraídas do APK conferem com os binários
+gerados. Estado: **BUILD VERIFIED, DEVICE TEST REQUIRED**; nenhum teste físico
+foi executado.
+
+## Stage 8 — COMPLETE / DEVICE VERIFIED
+
+FIRST REAL GAMEPLAY — DEVICE VERIFIED
+
+O checkpoint inclui o código-fonte Android, installer XDVDFS, integração
+`HostPathDevice`, runtime/plugin ARM64, patches reproduzíveis do ReXGlue e a
+infraestrutura de build necessária. Conteúdo do jogo, código gerado a partir do
+XEX, APKs, bibliotecas nativas, caches e logs permanecem fora do Git.

@@ -1,0 +1,29 @@
+diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
+index 664bb31..0000000 100644
+--- a/src/ui/vulkan/vulkan_presenter.cpp
++++ b/src/ui/vulkan/vulkan_presenter.cpp
+@@ -1153,10 +1153,22 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
+   // create until the surface becomes smaller).
+   VkExtent2D max_framebuffer_extent = util::GetMax2DFramebufferExtent(vulkan_device->properties());
+   VkExtent2D image_extent;
++#if REX_PLATFORM_ANDROID
++  // During a rotation SDL may report the preceding or following window size
++  // while Android WSI has already selected a fixed extent. Vulkan requires
++  // that exact currentExtent when it is defined; using the stale SDL size
++  // makes vkCreateSwapchainKHR fail and previously caused a needless surface
++  // destruction/recreation for the same ANativeWindow.
++  if (surface_capabilities.currentExtent.width != UINT32_MAX) {
++    image_extent = surface_capabilities.currentExtent;
++  } else
++#endif
++  {
+   image_extent.width = std::min(std::max(std::min(width, max_framebuffer_extent.width),
+                                          surface_capabilities.minImageExtent.width),
+                                 surface_capabilities.maxImageExtent.width);
+   image_extent.height = std::min(std::max(std::min(height, max_framebuffer_extent.height),
+                                           surface_capabilities.minImageExtent.height),
+                                  surface_capabilities.maxImageExtent.height);
++  }
+   if (!image_extent.width || !image_extent.height ||
+       image_extent.width > max_framebuffer_extent.width ||
+       image_extent.height > max_framebuffer_extent.height) {

@@ -1,0 +1,111 @@
+diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
+--- a/src/ui/rex_app.cpp
++++ b/src/ui/rex_app.cpp
+@@ -471,5 +471,11 @@ void ReXApp::OnCreateDialogs(ImGuiDrawer* drawer) {
+ }
+ 
+ void ReXApp::LaunchModule() {
++#if REX_PLATFORM_ANDROID
++  REXLOG_INFO("P8_DEFERRED_LAUNCH_CALLBACK_QUEUED");
++#endif
+   app_context().CallInUIThreadDeferred([this]() {
++#if REX_PLATFORM_ANDROID
++    REXLOG_INFO("P8_DEFERRED_LAUNCH_CALLBACK_ENTER");
++#endif
+     // Register the achievement notification callback now that the runtime and
+@@ -493,10 +499,16 @@ void ReXApp::LaunchModule() {
+ 
+     OnPreLaunchModule();
+ 
++#if REX_PLATFORM_ANDROID
++    REXLOG_INFO("P8_PREPARE_MODULE_LAUNCH_BEGIN");
++#endif
+     auto main_thread = runtime_->PrepareModuleLaunch();
+     if (!main_thread) {
+       REXLOG_ERROR("Failed to launch module");
+       app_context().QuitFromUIThread();
+       return;
+     }
++#if REX_PLATFORM_ANDROID
++    REXLOG_INFO("P8_PREPARE_MODULE_LAUNCH_READY");
++#endif
+ 
+     auto* graphics_system = runtime_->graphics_system();
+diff --git a/src/system/kernel_state.cpp b/src/system/kernel_state.cpp
+--- a/src/system/kernel_state.cpp
++++ b/src/system/kernel_state.cpp
+@@ -554,5 +554,8 @@ object_ref<XThread> KernelState::PrepareModuleLaunch(object_ref<UserModule> mod
+   REXSYS_DEBUG("KernelState: Preparing module launch...");
+ 
+   // Create a thread to run in.
++#if REX_PLATFORM_ANDROID
++  REXLOG_INFO("P8_MAIN_XTHREAD_CREATE_BEGIN address={:08X}", module->entry_point());
++#endif
+   // We start suspended so the caller can inspect/attach before resume.
+   auto thread = object_ref<XThread>(new XThread(
+@@ -567,4 +570,7 @@ object_ref<XThread> KernelState::PrepareModuleLaunch(object_ref<UserModule> mod
+     return nullptr;
+   }
+ 
++#if REX_PLATFORM_ANDROID
++  REXLOG_INFO("P8_MAIN_XTHREAD_CREATE_READY address={:08X}", module->entry_point());
++#endif
+   return thread;
+ }
+diff --git a/src/system/xthread.cpp b/src/system/xthread.cpp
+--- a/src/system/xthread.cpp
++++ b/src/system/xthread.cpp
+@@ -569,5 +569,8 @@ X_STATUS XThread::Terminate(int exit_code) {
+ }
+ 
+ void XThread::Execute() {
++#if REX_PLATFORM_ANDROID
++  if (main_thread_) REXLOG_INFO("P8_XTHREAD_EXECUTE_ENTER");
++#endif
+   REXSYS_NOISY_DEBUG("Execute thid {} (handle={:08X}, '{}', native={:08X})", thread_id_, handle(),
+                      thread_name_, thread_->system_id());
+@@ -610,6 +613,12 @@ void XThread::Execute() {
+   auto* dispatcher = runtime->function_dispatcher();
+   auto* memory = runtime->memory();
+   PPCFunc* func = dispatcher->GetFunction(address);
++#if REX_PLATFORM_ANDROID
++  if (main_thread_) {
++    REXLOG_INFO("P8_GUEST_ENTRYPOINT_RESOLVE address={:08X}", address);
++    REXLOG_INFO("P8_GUEST_ENTRYPOINT_RESOLVE_RESULT value={}", func ? "found" : "missing");
++  }
++#endif
+   if (!func) {
+     REXSYS_ERROR("XThread::Execute - No function registered at {:08X}", address);
+     return;
+@@ -645,6 +654,9 @@ void XThread::Execute() {
+ 
+   // Execute the function
+   REXSYS_NOISY_DEBUG("XThread::Execute - Calling function at {:08X}", address);
++#if REX_PLATFORM_ANDROID
++  if (main_thread_) REXLOG_INFO("P8_GUEST_ENTRYPOINT_CALL_BEGIN");
++#endif
+   func(*ctx, base);
+ 
+   exit_code = static_cast<int>(ctx->r3.u32);
+@@ -930,5 +948,8 @@ uint32_t XThread::suspend_count() {
+ X_STATUS XThread::Resume(uint32_t* out_suspend_count) {
+   auto guest_thread = guest_object<X_KTHREAD>();
+   uint32_t unused_host_suspend_count = 0;
++#if REX_PLATFORM_ANDROID
++  if (main_thread_) REXLOG_INFO("P8_MAIN_XTHREAD_RESUME_BEGIN");
++#endif
+ 
+ #if REX_PLATFORM_WIN32
+@@ -966,6 +987,11 @@ X_STATUS XThread::Resume(uint32_t* out_suspend_count) {
+   if (out_suspend_count) {
+     *out_suspend_count = previous_suspend_count;
+   }
+-  return thread_->Resume(&unused_host_suspend_count) ? X_STATUS_SUCCESS : X_STATUS_UNSUCCESSFUL;
++  const X_STATUS status = thread_->Resume(&unused_host_suspend_count) ? X_STATUS_SUCCESS
++                                                                       : X_STATUS_UNSUCCESSFUL;
++#if REX_PLATFORM_ANDROID
++  if (main_thread_) REXLOG_INFO("P8_MAIN_XTHREAD_RESUME_RETURN status={:08X}", status);
++#endif
++  return status;
+ #endif
+ }

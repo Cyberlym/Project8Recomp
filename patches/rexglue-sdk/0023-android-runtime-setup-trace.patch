@@ -1,0 +1,183 @@
+diff --git a/include/rex/runtime.h b/include/rex/runtime.h
+index 34f226c..b9a89a4 100644
+--- a/include/rex/runtime.h
++++ b/include/rex/runtime.h
+@@ -64,6 +64,13 @@ class ImGuiDrawer;
+ /// Audio uses a factory because AudioSystem requires a FunctionDispatcher* at
+ /// construction time, which is only available during Setup().
+ struct RuntimeConfig {
++  // Optional replacement for the host-directory game device. This keeps the
++  // default desktop path unchanged while permitting a platform frontend to
++  // provide a read-only filesystem device for content it cannot expose as a
++  // host path (for example a seekable Android document FD).
++  std::function<std::unique_ptr<filesystem::Device>(std::string_view mount_path)>
++      game_device_factory;
++  std::function<void(std::string_view)> setup_trace;
+   std::unique_ptr<system::IGraphicsSystem> graphics;
+   // GPU emulation plugin loaded by ReXApp when `graphics` is empty
+   // (e.g. "xenos"); empty means no GPU emulation.
+@@ -187,6 +194,8 @@ class Runtime {
+   std::filesystem::path update_data_root_;
+   std::filesystem::path cache_root_;
+   std::filesystem::path metadata_root_;
++  std::function<std::unique_ptr<filesystem::Device>(std::string_view mount_path)>
++      game_device_factory_;
+ 
+   ui::WindowedAppContext* app_context_ = nullptr;
+   ui::Window* display_window_ = nullptr;
+diff --git a/src/system/runtime.cpp b/src/system/runtime.cpp
+index c10694c..b84fbff 100644
+--- a/src/system/runtime.cpp
++++ b/src/system/runtime.cpp
+@@ -95,30 +95,43 @@ X_STATUS Runtime::Setup(RuntimeConfig config) {
+   }
+   instance_ = this;
+ 
+-  auto fail = [this](X_STATUS status, std::string_view reason) {
++  auto trace = [&config](std::string_view step) {
++    if (config.setup_trace) config.setup_trace(step);
++  };
++  auto fail = [this, &trace](X_STATUS status, std::string_view reason) {
++    trace("P8_RUNTIME_SETUP_FAIL reason=" + std::string(reason));
+     REXSYS_ERROR("Runtime::Setup failed: {}", reason);
+     Shutdown();
+     return status;
+   };
+ 
+   // Initialize SEH exception support for hardware exception handling
++  trace("P8_RUNTIME_SETUP_SEH_BEGIN");
+   rex::initialize_seh();
++  trace("P8_RUNTIME_SETUP_SEH_READY");
+ 
+   // Initialize clock
++  trace("P8_RUNTIME_SETUP_CLOCK_BEGIN");
+   chrono::Clock::set_guest_tick_frequency(50000000);
+   chrono::Clock::set_guest_system_time_base(chrono::Clock::QueryHostSystemTime());
+   chrono::Clock::set_guest_time_scalar(1.0);
++  trace("P8_RUNTIME_SETUP_CLOCK_READY");
+ 
+   // Enable threading affinity configuration
++  trace("P8_RUNTIME_SETUP_THREAD_CONFIG_BEGIN");
+   thread::EnableAffinityConfiguration();
++  trace("P8_RUNTIME_SETUP_THREAD_CONFIG_READY");
+ 
+   tool_mode_ = config.tool_mode;
++  game_device_factory_ = std::move(config.game_device_factory);
+ 
+   // Create memory system first
++  trace("P8_RUNTIME_SETUP_MEMORY_BEGIN");
+   memory_ = std::make_unique<memory::Memory>();
+   if (!memory_->Initialize()) {
+     return fail(X_STATUS_UNSUCCESSFUL, "memory init failed");
+   }
++  trace("P8_RUNTIME_SETUP_MEMORY_READY");
+ 
+   export_resolver_ = std::make_unique<runtime::ExportResolver>();
+ 
+@@ -126,10 +139,14 @@ X_STATUS Runtime::Setup(RuntimeConfig config) {
+       std::make_unique<runtime::FunctionDispatcher>(memory_.get(), export_resolver_.get());
+ 
+   // Create virtual file system
++  trace("P8_RUNTIME_SETUP_VFS_OBJECT_BEGIN");
+   file_system_ = std::make_unique<rex::filesystem::VirtualFileSystem>();
++  trace("P8_RUNTIME_SETUP_VFS_OBJECT_READY");
+ 
+   // Create kernel state - this sets the global singleton
++  trace("P8_RUNTIME_SETUP_KERNEL_BEGIN");
+   kernel_state_ = std::make_unique<system::KernelState>(this);
++  trace("P8_RUNTIME_SETUP_KERNEL_READY");
+ 
+   // Initialize input from injected config
+   if (config.input_factory) {
+@@ -148,7 +165,9 @@ X_STATUS Runtime::Setup(RuntimeConfig config) {
+ 
+   // HLE kernel modules and apps.
+   if (config.kernel_init) {
++    trace("P8_RUNTIME_SETUP_MODULES_BEGIN");
+     config.kernel_init(this, kernel_state_.get());
++    trace("P8_RUNTIME_SETUP_MODULES_READY");
+   }
+ 
+   // Initialize the APU (Audio Processing Unit) from injected config
+@@ -167,9 +186,11 @@ X_STATUS Runtime::Setup(RuntimeConfig config) {
+   }
+ 
+   // Set up VFS: game_data_root as game:/d:, update_data_root as update:
++  trace("P8_RUNTIME_SETUP_VFS_MOUNT_BEGIN");
+   if (!SetupVfs()) {
+     return fail(X_STATUS_UNSUCCESSFUL, "VFS setup failed");
+   }
++  trace("P8_RUNTIME_SETUP_VFS_MOUNT_READY");
+ 
+   // Skip GPU initialization in tool mode (for analysis tools like codegen)
+   if (tool_mode_) {
+@@ -180,6 +201,7 @@ X_STATUS Runtime::Setup(RuntimeConfig config) {
+ 
+   // Initialize GPU from injected config
+   if (config.graphics) {
++    trace("P8_RUNTIME_SETUP_GRAPHICS_BEGIN");
+     graphics_system_ = std::move(config.graphics);
+     bool with_presentation = (app_context_ != nullptr);
+     X_STATUS gpu_status = graphics_system_->Setup(function_dispatcher_.get(), kernel_state_.get(),
+@@ -187,11 +209,13 @@ X_STATUS Runtime::Setup(RuntimeConfig config) {
+     if (XFAILED(gpu_status)) {
+       return fail(gpu_status, "GPU setup failed");
+     }
++    trace("P8_RUNTIME_SETUP_GRAPHICS_READY");
+     REXSYS_DEBUG("GPU system initialized (presentation={})", with_presentation);
+   } else {
+     REXSYS_DEBUG("Runtime initialized without graphics system (native rendering mode)");
+   }
+ 
++  trace("P8_RUNTIME_SETUP_OK");
+   REXSYS_DEBUG("Runtime initialized successfully");
+   setup_complete_ = true;
+   return X_STATUS_SUCCESS;
+@@ -292,21 +316,29 @@ uint8_t* Runtime::virtual_membase() const {
+ }
+ 
+ bool Runtime::SetupVfs() {
+-  if (game_data_root_.empty()) {
++  if (game_data_root_.empty() && !game_device_factory_) {
+     REXSYS_WARN("Runtime::SetupVfs: No game_data_root specified, skipping VFS setup");
+     return true;
+   }
+ 
+-  auto abs_game_root = std::filesystem::absolute(game_data_root_);
+-  if (!std::filesystem::exists(abs_game_root)) {
+-    REXSYS_ERROR("Runtime::SetupVfs: game_data_root does not exist: {}", abs_game_root.string());
+-    return false;
+-  }
+-
+   // Mount game_data_root as \Device\Harddisk0\Partition1
+   auto mount_path = "\\Device\\Harddisk0\\Partition1";
+-  auto device = std::make_unique<rex::filesystem::HostPathDevice>(
+-      mount_path, abs_game_root, !REXCVAR_GET(allow_game_relative_writes));
++  std::unique_ptr<rex::filesystem::Device> device;
++  if (game_device_factory_) {
++    device = game_device_factory_(mount_path);
++    if (!device) {
++      REXSYS_ERROR("Runtime::SetupVfs: game device factory returned no device");
++      return false;
++    }
++  } else {
++    auto abs_game_root = std::filesystem::absolute(game_data_root_);
++    if (!std::filesystem::exists(abs_game_root)) {
++      REXSYS_ERROR("Runtime::SetupVfs: game_data_root does not exist: {}", abs_game_root.string());
++      return false;
++    }
++    device = std::make_unique<rex::filesystem::HostPathDevice>(
++        mount_path, abs_game_root, !REXCVAR_GET(allow_game_relative_writes));
++  }
+   if (!device->Initialize()) {
+     REXSYS_ERROR("Runtime::SetupVfs: Failed to initialize host path device");
+     return false;
+@@ -315,7 +347,7 @@ bool Runtime::SetupVfs() {
+     REXSYS_ERROR("Runtime::SetupVfs: Failed to register host path device");
+     return false;
+   }
+-  REXSYS_DEBUG("  Mounted {} at {}", abs_game_root.string(), mount_path);
++  REXSYS_DEBUG("  Mounted game device at {}", mount_path);
+ 
+   // Register symbolic links for game: and D:
+   file_system_->RegisterSymbolicLink("game:", mount_path);

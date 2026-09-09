@@ -1,0 +1,184 @@
+diff --git a/src/ui/android_presentation_diagnostics.h b/src/ui/android_presentation_diagnostics.h
+index 4023b3c..78d6093 100644
+--- a/src/ui/android_presentation_diagnostics.h
++++ b/src/ui/android_presentation_diagnostics.h
+@@ -12,6 +12,12 @@ enum class AndroidPresentationDiagnosticEvent : uint32_t {
+   kVulkanSurfaceCreated = 3,
+   kSurfaceDestroyed = 4,
+   kVulkanSurfaceDestroyed = 5,
++  kVulkanReconnect = 6,
++  kVulkanSwapchainAttempt = 7,
++  kVulkanSwapchainCapabilities = 8,
++  kVulkanSwapchainExtent = 9,
++  kVulkanSwapchainFailure = 10,
++  kVulkanSurfaceFallback = 11,
+ };
+ 
+ using AndroidPresentationDiagnosticCallback = void (*)(
+diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
+index e06861f..1a58e95 100644
+--- a/src/ui/vulkan/vulkan_presenter.cpp
++++ b/src/ui/vulkan/vulkan_presenter.cpp
+@@ -765,8 +765,20 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
+   // awaiting completion of the usage of the swapchain and the surface on the
+   // GPU.
+   if (paint_context_.vulkan_surface != VK_NULL_HANDLE) {
++#if REX_PLATFORM_ANDROID && defined(REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS)
++    // Reconnects occur only on surface state changes. Record the wrapper
++    // identity before any teardown to distinguish resize from replacement.
++    AndroidPresentationDiagnostic(AndroidPresentationDiagnosticEvent::kVulkanReconnect, 0,
++                                  reinterpret_cast<uintptr_t>(&new_surface), new_surface_width,
++                                  new_surface_height);
++#endif
+     VkSwapchainKHR old_swapchain = paint_context_.PrepareForSwapchainRetirement();
+     bool surface_unusable;
++#if REX_PLATFORM_ANDROID && defined(REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS)
++    AndroidPresentationDiagnostic(AndroidPresentationDiagnosticEvent::kVulkanSwapchainAttempt,
++                                  0, reinterpret_cast<uintptr_t>(old_swapchain),
++                                  new_surface_width, new_surface_height);
++#endif
+     paint_context_.swapchain = PaintContext::CreateSwapchainForVulkanSurface(
+         vulkan_device_, paint_context_.vulkan_surface, new_surface_width, new_surface_height,
+         old_swapchain, paint_context_.present_queue_family, new_swapchain_format,
+@@ -776,6 +788,12 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
+       dfn.vkDestroySwapchainKHR(device, old_swapchain, nullptr);
+     }
+     if (paint_context_.swapchain == VK_NULL_HANDLE) {
++#if REX_PLATFORM_ANDROID && defined(REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS)
++      AndroidPresentationDiagnostic(AndroidPresentationDiagnosticEvent::kVulkanSurfaceFallback,
++                                    surface_unusable ? 1 : 0,
++                                    reinterpret_cast<uintptr_t>(paint_context_.vulkan_surface),
++                                    new_surface_width, new_surface_height);
++#endif
+       // Couldn't create the swapchain for the existing surface - start over.
+       paint_context_.DestroySwapchainAndVulkanSurface();
+     }
+@@ -1133,8 +1151,19 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
+ 
+   // Get surface capabilities.
+   VkSurfaceCapabilitiesKHR surface_capabilities;
+-  if (ifn.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface,
+-                                                    &surface_capabilities) != VK_SUCCESS) {
++  VkResult surface_capabilities_result = ifn.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
++      physical_device, surface, &surface_capabilities);
++#if REX_PLATFORM_ANDROID && defined(REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS)
++  AndroidPresentationDiagnostic(AndroidPresentationDiagnosticEvent::kVulkanSwapchainCapabilities,
++                                int32_t(surface_capabilities_result),
++                                reinterpret_cast<uintptr_t>(surface), width, height);
++#endif
++  if (surface_capabilities_result != VK_SUCCESS) {
++#if REX_PLATFORM_ANDROID && defined(REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS)
++    AndroidPresentationDiagnostic(AndroidPresentationDiagnosticEvent::kVulkanSwapchainFailure,
++                                  int32_t(surface_capabilities_result),
++                                  reinterpret_cast<uintptr_t>(surface), 1, 0);
++#endif
+     REXLOG_ERROR("VulkanPresenter: Failed to get Vulkan surface capabilities");
+     // Some strange error, try again later.
+     return VK_NULL_HANDLE;
+@@ -1172,9 +1201,30 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
+                                           surface_capabilities.minImageExtent.height),
+                                  surface_capabilities.maxImageExtent.height);
+   }
++#if REX_PLATFORM_ANDROID && defined(REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS)
++  AndroidPresentationDiagnostic(AndroidPresentationDiagnosticEvent::kVulkanSwapchainExtent, 1,
++                                reinterpret_cast<uintptr_t>(surface),
++                                surface_capabilities.currentExtent.width,
++                                surface_capabilities.currentExtent.height);
++  AndroidPresentationDiagnostic(AndroidPresentationDiagnosticEvent::kVulkanSwapchainExtent, 2,
++                                reinterpret_cast<uintptr_t>(surface),
++                                surface_capabilities.minImageExtent.width,
++                                surface_capabilities.minImageExtent.height);
++  AndroidPresentationDiagnostic(AndroidPresentationDiagnosticEvent::kVulkanSwapchainExtent, 3,
++                                reinterpret_cast<uintptr_t>(surface),
++                                surface_capabilities.maxImageExtent.width,
++                                surface_capabilities.maxImageExtent.height);
++  AndroidPresentationDiagnostic(AndroidPresentationDiagnosticEvent::kVulkanSwapchainExtent, 4,
++                                reinterpret_cast<uintptr_t>(surface), image_extent.width,
++                                image_extent.height);
++#endif
+   if (!image_extent.width || !image_extent.height ||
+       image_extent.width > max_framebuffer_extent.width ||
+       image_extent.height > max_framebuffer_extent.height) {
++#if REX_PLATFORM_ANDROID && defined(REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS)
++    AndroidPresentationDiagnostic(AndroidPresentationDiagnosticEvent::kVulkanSwapchainFailure,
++                                  VK_SUCCESS, reinterpret_cast<uintptr_t>(surface), 2, 0);
++#endif
+     return VK_NULL_HANDLE;
+   }
+ 
+@@ -1187,19 +1237,20 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
+   uint32_t queue_family_index_graphics_compute = vulkan_device->queue_family_graphics_compute();
+   const VulkanDevice::QueueFamily& queue_family_graphics_compute =
+       queue_families[queue_family_index_graphics_compute];
++  VkResult surface_support_result = VK_SUCCESS;
+   if (queue_family_graphics_compute.may_support_presentation &&
+       !queue_family_graphics_compute.queues.empty() &&
+-      ifn.vkGetPhysicalDeviceSurfaceSupportKHR(physical_device, queue_family_index_graphics_compute,
+-                                               surface,
+-                                               &queue_family_present_supported) == VK_SUCCESS &&
++      (surface_support_result = ifn.vkGetPhysicalDeviceSurfaceSupportKHR(
++           physical_device, queue_family_index_graphics_compute, surface,
++           &queue_family_present_supported)) == VK_SUCCESS &&
+       queue_family_present_supported) {
+     queue_family_index_present = queue_family_index_graphics_compute;
+   } else {
+     for (uint32_t i = 0; i < uint32_t(queue_families.size()); ++i) {
+       const VulkanDevice::QueueFamily& queue_family = queue_families[i];
+       if (!queue_family.queues.empty() && queue_family.may_support_presentation &&
+-          ifn.vkGetPhysicalDeviceSurfaceSupportKHR(physical_device, i, surface,
+-                                                   &queue_family_present_supported) == VK_SUCCESS &&
++          (surface_support_result = ifn.vkGetPhysicalDeviceSurfaceSupportKHR(
++               physical_device, i, surface, &queue_family_present_supported)) == VK_SUCCESS &&
+           queue_family_present_supported) {
+         queue_family_index_present = i;
+         break;
+@@ -1209,6 +1260,11 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
+   if (queue_family_index_present == UINT32_MAX) {
+     // Not unusable though - may become presentable if the window (with the same
+     // surface) moved to a different display, for instance.
++#if REX_PLATFORM_ANDROID && defined(REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS)
++    AndroidPresentationDiagnostic(AndroidPresentationDiagnosticEvent::kVulkanSwapchainFailure,
++                                  int32_t(surface_support_result),
++                                  reinterpret_cast<uintptr_t>(surface), 3, 0);
++#endif
+     return VK_NULL_HANDLE;
+   }
+ 
+@@ -1218,6 +1274,10 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
+     REXLOG_ERROR(
+         "VulkanPresenter: The surface doesn't support identity or "
+         "window-system-controlled transform");
++#if REX_PLATFORM_ANDROID && defined(REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS)
++    AndroidPresentationDiagnostic(AndroidPresentationDiagnosticEvent::kVulkanSwapchainFailure,
++                                  VK_SUCCESS, reinterpret_cast<uintptr_t>(surface), 4, 0);
++#endif
+     return VK_NULL_HANDLE;
+   }
+ 
+@@ -1397,6 +1457,10 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
+       REXLOG_ERROR(
+           "VulkanPresenter: The surface doesn't support any composite alpha "
+           "mode");
++#if REX_PLATFORM_ANDROID && defined(REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS)
++      AndroidPresentationDiagnostic(AndroidPresentationDiagnosticEvent::kVulkanSwapchainFailure,
++                                    VK_SUCCESS, reinterpret_cast<uintptr_t>(surface), 5, 0);
++#endif
+       return VK_NULL_HANDLE;
+     }
+     swapchain_create_info.compositeAlpha =
+@@ -1432,7 +1496,14 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
+   swapchain_create_info.clipped = VK_TRUE;
+   swapchain_create_info.oldSwapchain = old_swapchain;
+   VkSwapchainKHR swapchain;
+-  if (dfn.vkCreateSwapchainKHR(device, &swapchain_create_info, nullptr, &swapchain) != VK_SUCCESS) {
++  VkResult swapchain_create_result =
++      dfn.vkCreateSwapchainKHR(device, &swapchain_create_info, nullptr, &swapchain);
++  if (swapchain_create_result != VK_SUCCESS) {
++#if REX_PLATFORM_ANDROID && defined(REXGLUE_ANDROID_PRESENTATION_DIAGNOSTICS)
++    AndroidPresentationDiagnostic(AndroidPresentationDiagnosticEvent::kVulkanSwapchainFailure,
++                                  int32_t(swapchain_create_result),
++                                  reinterpret_cast<uintptr_t>(surface), 6, 0);
++#endif
+     REXLOG_ERROR("VulkanPresenter: Failed to create a swapchain");
+     return VK_NULL_HANDLE;
+   }

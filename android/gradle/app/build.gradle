@@ -1,0 +1,87 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+def buildCacheRoot = providers.gradleProperty('project8BuildCache')
+        .orElse('/workspaces/.project8-build-cache')
+        .get()
+def rexGlueRoot = providers.gradleProperty('project8RexGlueRoot')
+        .orElse("${buildCacheRoot}/rexglue-v0.10.0")
+        .get()
+def nativeBuildRoot = providers.gradleProperty('project8NativeBuildRoot')
+        .orElse("${buildCacheRoot}/rexglue-build/native")
+        .get()
+def stagedJniLibs = layout.buildDirectory.dir('generated/jniLibs')
+
+android {
+    namespace 'com.cyberlym.project8probe'
+    compileSdk 35
+    buildToolsVersion '35.0.0'
+
+    defaultConfig {
+        applicationId 'com.cyberlym.project8probe'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '1.0'
+    }
+
+    sourceSets {
+        main {
+            manifest.srcFile '../../probe/app/src/main/AndroidManifest.xml'
+            java.srcDirs(
+                    '../../probe/app/src/main/java',
+                    "${rexGlueRoot}/thirdparty/sdl3/android-project/app/src/main/java")
+            kotlin.srcDir '../../probe/app/src/main/kotlin'
+            jniLibs.srcDir(stagedJniLibs)
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging true
+        }
+    }
+
+    buildFeatures {
+        compose true
+        buildConfig true
+    }
+
+    composeOptions {
+        kotlinCompilerExtensionVersion '1.5.14'
+    }
+}
+
+dependencies {
+    implementation platform('androidx.compose:compose-bom:2024.06.00')
+    implementation 'androidx.activity:activity-compose:1.9.0'
+    implementation 'androidx.compose.ui:ui'
+    implementation 'androidx.compose.ui:ui-tooling-preview'
+    implementation 'androidx.compose.material3:material3'
+}
+
+tasks.register('stageNativeLibs', Copy) {
+    from("${nativeBuildRoot}/libmain.so")
+    from("${rexGlueRoot}/out/android-arm64/librexruntime.so")
+    from("${rexGlueRoot}/out/android-arm64/librexgpu-xenos.so")
+    from("${rexGlueRoot}/out/android-arm64/libSDL3.so")
+    into(stagedJniLibs.map { it.dir('arm64-v8a') })
+    duplicatesStrategy = DuplicatesStrategy.FAIL
+}
+
+tasks.configureEach {
+    if (name == 'mergeDebugJniLibFolders' || name == 'mergeDebugNativeLibs') {
+        dependsOn(tasks.named('stageNativeLibs'))
+    }
+}

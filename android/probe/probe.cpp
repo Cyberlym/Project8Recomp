@@ -1,21 +1,27 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <SDL3/SDL_system.h>
+#include <android/log.h>
 #include <jni.h>
 
 #include <rex/ui/vulkan/instance.h>
 #include <rex/ui/vulkan/provider.h>
 #include <rex/ui/window.h>
 #include <rex/ui/windowed_app_context_sdl.h>
+#include <rex/ui/windowed_app.h>
 #include <rex/runtime.h>
+#include <rex/memory/utils.h>
 
 #include "ui/android_presentation_diagnostics.h"
 
 #include "fiber_test.h"
 #include "android_preflight.h"
+#include "android_game_session.h"
+#include "android_gameplay_log.h"
 
 #include <cstdarg>
 #include <cstdio>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -588,6 +594,13 @@ extern "C" void rexglue_android_presentation_diagnostic(
         g_current_vk_surface_handle = 0;
         ++g_vk_surface_destroy_count;
         break;
+      case rex::ui::AndroidPresentationDiagnosticEvent::kVulkanReconnect:
+      case rex::ui::AndroidPresentationDiagnosticEvent::kVulkanSwapchainAttempt:
+      case rex::ui::AndroidPresentationDiagnosticEvent::kVulkanSwapchainCapabilities:
+      case rex::ui::AndroidPresentationDiagnosticEvent::kVulkanSwapchainExtent:
+      case rex::ui::AndroidPresentationDiagnosticEvent::kVulkanSwapchainFailure:
+      case rex::ui::AndroidPresentationDiagnosticEvent::kVulkanSurfaceFallback:
+        break;
     }
     RefreshReportLocked();
   }
@@ -618,10 +631,49 @@ extern "C" void rexglue_android_presentation_diagnostic(
       LogLine("REXUI_VK_SURFACE_DESTROY: handle=%p",
               reinterpret_cast<void*>(handle));
       break;
+    case rex::ui::AndroidPresentationDiagnosticEvent::kVulkanReconnect:
+      LogLine("REXUI_VK_RECONNECT: wrapper=%p requested=%u x %u",
+              reinterpret_cast<void*>(handle), width, height);
+      break;
+    case rex::ui::AndroidPresentationDiagnosticEvent::kVulkanSwapchainAttempt:
+      LogLine("REXUI_VK_SWAPCHAIN_ATTEMPT: oldSwapchain=%p requested=%u x %u",
+              reinterpret_cast<void*>(handle), width, height);
+      break;
+    case rex::ui::AndroidPresentationDiagnosticEvent::kVulkanSwapchainCapabilities:
+      LogLine("REXUI_VK_SWAPCHAIN_CAPABILITIES: VkResult=%d surface=%p requested=%u x %u",
+              result, reinterpret_cast<void*>(handle), width, height);
+      break;
+    case rex::ui::AndroidPresentationDiagnosticEvent::kVulkanSwapchainExtent:
+      LogLine("REXUI_VK_SWAPCHAIN_EXTENT: kind=%d surface=%p %u x %u", result,
+              reinterpret_cast<void*>(handle), width, height);
+      break;
+    case rex::ui::AndroidPresentationDiagnosticEvent::kVulkanSwapchainFailure:
+      LogLine("REXUI_VK_SWAPCHAIN_FAILURE: stage=%u VkResult=%d surface=%p",
+              width, result, reinterpret_cast<void*>(handle));
+      break;
+    case rex::ui::AndroidPresentationDiagnosticEvent::kVulkanSurfaceFallback:
+      LogLine("REXUI_VK_SURFACE_FALLBACK: surface=%p surface_unusable=%d requested=%u x %u",
+              reinterpret_cast<void*>(handle), result, width, height);
+      break;
   }
 }
 
-int main(int, char**) { return RunProbe(); }
+int main(int argc, char** argv) {
+  if (thps::android::HasPreparedGameplaySession()) {
+    // SDL library mode replaces the SDK's Android entry point. The Android
+    // memory backend must therefore bind ASharedMemory_create here, before
+    // Runtime::Setup reserves the guest arena. Do it once: its counterpart
+    // owns process-global dlopen state and is not an Activity lifecycle hook.
+    static std::once_flag android_memory_once;
+    std::call_once(android_memory_once, [] {
+      thps::android::LogGameplayEvent("P8_ANDROID_MEMORY_INIT_BEGIN");
+      rex::memory::AndroidInitialize();
+      thps::android::LogGameplayEvent("P8_ANDROID_MEMORY_INIT_READY");
+    });
+    return rex::ui::RunWindowedApp("thps_p8", argc, argv);
+  }
+  return RunProbe();
+}
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_cyberlym_project8probe_ProbeActivity_nativeGetReport(JNIEnv* env, jobject) {
@@ -703,4 +755,25 @@ Java_com_cyberlym_project8probe_ProbeActivity_nativePrepareActivityRecreate(
   ++g_activity_recreate_request_count;
   RefreshReportLocked();
   return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_cyberlym_project8probe_GameplayActivity_nativePrepareGameplay(
+    JNIEnv* env, jclass, jstring game_root) {
+  if (!game_root) return JNI_FALSE;
+  const char* chars = env->GetStringUTFChars(game_root, nullptr);
+  if (!chars) return JNI_FALSE;
+  const std::filesystem::path root(chars);
+  env->ReleaseStringUTFChars(game_root, chars);
+  thps::android::LogGameplayEvent("P8_GAME_SESSION stage=native-prepare installed_game");
+  const bool ready = thps::android::PrepareGameplaySession(root);
+  thps::android::LogGameplayEvent("P8_GAME_SESSION_RESULT value=%s",
+                                  ready ? "ready" : "failed");
+  return ready ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_cyberlym_project8probe_GameplayActivity_nativeInitializeGameplayLog(
+    JNIEnv* env, jclass activity_class) {
+  thps::android::InitializeGameplayLogBridge(env, activity_class);
 }

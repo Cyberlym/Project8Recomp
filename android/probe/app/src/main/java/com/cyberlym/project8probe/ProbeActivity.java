@@ -26,6 +26,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 import org.libsdl.app.SDLActivity;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
@@ -159,6 +160,8 @@ public final class ProbeActivity extends SDLActivity {
     private String getCombinedReport() {
         return nativeGetReport() + "\nPREVIOUS_PROCESS_EXIT_REASON: " + previousProcessExitReason
                 + "\nAPPLICATION_EXIT_TRACE: " + applicationExitTraceStatus
+                + "\nGAMEPLAY_LOG_PATH: " + getSharedPreferences("gameplay-log", MODE_PRIVATE)
+                        .getString("path", "NOT CREATED")
                 + "\n\nPREVIOUS SESSION LIFECYCLE TRACE\n" + getPersistentTrace();
     }
     private void copyReport() {
@@ -201,6 +204,7 @@ public final class ProbeActivity extends SDLActivity {
                 if (out == null) throw new IllegalStateException("log output stream unavailable");
                 out.write(diagnostics.getBytes(StandardCharsets.UTF_8));
             }
+            exportPrivateLogs(parent, timestamp);
             if (exitTrace != null && exitTrace.length != 0) {
                 Uri raw = DocumentsContract.createDocument(getContentResolver(), parent,
                         "application/octet-stream",
@@ -216,6 +220,25 @@ public final class ProbeActivity extends SDLActivity {
             appendBreadcrumb("DIAGNOSTIC_EXPORT_FAILED",
                     exception.getClass().getName() + ": " + exception.getMessage());
             handler.post(() -> Toast.makeText(this, "Diagnostic export failed", Toast.LENGTH_LONG).show());
+        }
+    }
+    private void exportPrivateLogs(Uri parent, String timestamp) throws Exception {
+        File directory = new File(getFilesDir(), "logs");
+        String[] names = {"thps_p8.log", "thps_p8.1.log", "thps_p8.2.log",
+                "gameplay.log", "gameplay.log.1", "gameplay.log.2"};
+        for (String name : names) {
+            File source = new File(directory, name);
+            if (!source.isFile() || source.length() == 0) continue;
+            Uri destination = DocumentsContract.createDocument(getContentResolver(), parent, "text/plain",
+                    "Project8Stage5-private-" + timestamp + "-" + name);
+            if (destination == null) throw new IllegalStateException("document provider did not create private log");
+            try (InputStream input = new java.io.FileInputStream(source);
+                 OutputStream output = getContentResolver().openOutputStream(destination, "w")) {
+                if (output == null) throw new IllegalStateException("private log output stream unavailable");
+                byte[] buffer = new byte[16384];
+                int count;
+                while ((count = input.read(buffer)) >= 0) output.write(buffer, 0, count);
+            }
         }
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {

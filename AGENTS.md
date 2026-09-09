@@ -137,50 +137,55 @@ failure copy in `src/launcher/src/launcher_app.cpp` is the reference.
 
 Estas regras adicionais regem o trabalho Android deste fork; as regras originais
 acima permanecem preservadas. Instruções explícitas do usuário sobre escopo e
-autorização prevalecem, inclusive a proibição de builds na etapa de auditoria.
+autorização prevalecem. Em conflitos, preserve a regra mais segura e restritiva.
 
-- Temos quota limitada de Codespaces e agente. Não execute builds, clean builds,
-  grandes downloads, clones pesados, codegen ou operações demoradas sem autorização
-  explícita do usuário. Antes de uma operação potencialmente cara, informe
-  exatamente o que pretende executar e espere permissão.
-- Nunca repita um build sem primeiro analisar o erro anterior.
-- Use pesquisa local com `rg`/`git grep` antes de abrir muitos arquivos.
-- Faça alterações pequenas e focadas.
-- Nunca faça `git clean -xfd`, `reset --hard`, force push ou remoções grandes sem
-  autorização. A autorização excepcional para alinhar o `main` inicial ao
-  upstream nesta etapa não autoriza novas reescritas nas próximas etapas.
-- Reutilize build directories e caches. Quando for necessário compilar código
-  C++ grande, use paralelismo conservador, inicialmente `-j2`.
-- Antes de push ou abertura de PR, inspecione os gatilhos de CI: builds remotos
-  automáticos também estão sujeitos à restrição de custo e autorização.
-- Antes de qualquer push, verifique se a operação pode disparar GitHub Actions
-  ou qualquer CI automático. Se puder iniciar build, testes, packaging, codegen
-  ou outro workflow potencialmente caro, informe quais workflows seriam
-  disparados e peça autorização do usuário antes do push.
-- Nunca deixe um workflow caro rodando por acidente. Se algum CI for iniciado
-  involuntariamente durante uma etapa que não autoriza builds/testes, tente
-  cancelá-lo imediatamente e registre o ocorrido em `docs/android-progress.md`.
-- Prefira commits locais durante auditorias e desenvolvimento intermediário.
-  Push para origin deve acontecer somente quando for necessário ou quando o
-  usuário autorizar explicitamente.
-- Não implemente UI bonita, Compose, Turnip ou otimizações antes do runtime
-  básico Android funcionar.
-- Não baixe, solicite ou faça commit de ISOs, `default.xex`, assets do jogo,
-  generated translation units ou qualquer conteúdo original do Xbox 360.
-  Conteúdo do jogo fornecido pelo usuário deve permanecer local, privado e
-  ignorado pelo Git. Confirme a regra de ignore para o caminho efetivamente usado
-  antes de armazenar conteúdo; nunca use `git add -f` para contorná-la.
-- Ao encontrar um bloqueio, investigue e reporte a causa antes de tentar
-  mudanças aleatórias.
-- Mantenha `origin` em `https://github.com/Cyberlym/Project8Recomp` e `upstream`
-  em `https://github.com/theokyr/Project8Recomp`. O `main` deve permanecer limpo,
-  acompanhando `upstream/main`; todo trabalho Android pertence a `android-port`.
-- Mantenha um diário técnico curto em `docs/android-progress.md` e as conclusões
-  da auditoria em `docs/android-audit.md`.
-- Ao terminar cada etapa, informe arquivos alterados, comandos executados,
-  descobertas, riscos e próximo passo recomendado.
 
-Na Etapa 1, faça somente organização do Git, regras e documentação de auditoria:
-não implemente Android, não configure ou execute builds e não execute codegen.
-Os comandos de compilação em "Before committing" acima não devem ser executados
-sem autorização explícita; registre essa limitação na validação da etapa.
+### Evidência, escopo e comportamento protegido
+
+Antes de qualquer mudança, leia somente os arquivos necessários e diferencie claramente FATO, HIPÓTESE e BLOCKER. Não trate hipótese como causa raiz, não aplique correção especulativa e feche a causa raiz com evidência sempre que possível. Sem evidência física ou de device, prefira instrumentação mínima a adivinhar um fix.
+
+Cada sessão deve atacar somente o objetivo solicitado e preferir o menor diff possível. Não faça refactor amplo, limpeza não relacionada, modernização de arquitetura, alteração de nomes ou estilo por preferência, correções adjacentes não solicitadas ou exploração de subsistemas sem relação direta com o blocker.
+
+Funcionalidade BUILD VERIFIED ou DEVICE VERIFIED é protegida. Não a reabra, reescreva ou “melhore” sem evidência direta de relação com o blocker atual. Antes de editar essa área, prove a necessidade e explique o risco de regressão; pare e peça autorização se a mudança não for obviamente pequena e determinística. Uma correção nunca deve introduzir regressão em outro caminho validado.
+
+Mantenha correções deste port no Android quando possível e preserve Linux desktop, Windows e macOS. Não mude comportamento multiplataforma sem necessidade comprovada.
+
+### Lifecycle, ownership e Vulkan
+
+Lifecycle Android é sensível. Sem causa raiz comprovada e análise explícita de regressão, não altere SDL generation management, generation-safe handoff, recriação de `SDLActivity`, reaper, join/thread teardown, `nativeSendQuit`, `nativeQuit`, o caminho `SDL_EVENT_QUIT` para `QuitFromUIThread`, ou ownership validado de `ANativeWindow`. Nunca substitua solução segura por bloquear eventos, ignorar erros, matar processo, force-stop ou join indefinido na UI thread.
+
+O ownership de `ANativeWindow` deve permanecer explícito e balanceado. Se o wrapper Android tem referência independente, acquire/release devem ser perfeitamente pareados; não armazene ponteiro emprestado de lifetime implícito do SDL nem enfraqueça ownership para “resolver” erro Vulkan.
+
+Vulkan deve preservar um caminho principal, uma instance e um presenter, sem framebuffer readback, cópias extras por frame, sincronização extra, alocações por frame ou recriação desnecessária de surface/swapchain. Nunca masque `VkResult`, ignore erro Vulkan, crie segunda instance/presenter ou recrie Vulkan inteiro para ocultar problema de lifecycle. Diferencie resize, recriação de swapchain, surface loss, native window replacement e Activity recreation; resize recuperável não prova perda definitiva de surface.
+
+### ReXGlue e patches
+
+ReXGlue está pinado: nunca use `latest`, fork aleatório, outra revisão “para testar” ou atualize o pin sem autorização explícita. Use o checkout/cache existente quando disponível; o checkout conhecido é `/workspaces/.project8-build-cache/rexglue-v0.10.0`, utilizável para leitura e build incremental. Correções persistentes e reproduzíveis devem ser representadas pelos patches versionados, não apenas pelo cache ou working tree.
+
+Correções em ReXGlue pertencem a `patches/rexglue-sdk/`. Não reescreva patch antigo validado só para encaixar correção: prefira novo patch sequencial (`0017`, `0018`, etc.). Não faça commits em submodules. Antes de considerar patch pronto, inspecione `git diff`, rode `git diff --check`, valide a série, confirme aplicação sobre o pin certo e confirme que nenhum pin de submodule mudou sem intenção.
+
+### Eficiência, builds e verificação
+
+Minimize custo de Codex, CPU, I/O e tempo: use `rg` ou `git grep`, intervalos pequenos e pesquisa dirigida; não leia o repositório inteiro quando poucas funções bastam, nem repita comando ou análise que já respondeu à pergunta. Antes de trabalhar, leia somente a parte relevante de `docs/android-progress.md` e reutilize evidência já registrada. Por padrão, não use web quando o código local basta, não faça downloads, regeneração de SDK/ReXGlue/SDL, recriação de build directory ou clean build sem necessidade. Nunca repita build sem analisar antes seu erro. Reutilize caches e builds, procure alternativa incremental antes de operação cara e, quando uma compilação C++ grande for autorizada, use Ninja `-j2` inicialmente.
+
+Não execute build grande, clean build, grandes downloads, clone pesado, codegen ou operação demorada sem autorização explícita: informe exatamente a operação e espere permissão. Depois de corrigir, mostre diff, rode verificações estáticas e valide patches; se a autorização de build for exigida, pare antes dele. Autorizado o build, faça só o incremental necessário, sem clean, rebuild completo, redownload de toolchain ou reconstrução desnecessária de dependências.
+
+BUILD VERIFIED não é DEVICE VERIFIED. Lifecycle, Vulkan surface, swapchain, input, rendering, runtime e performance permanecem DEVICE TEST REQUIRED até teste físico; DEVICE VERIFIED exige evidência física adequada.
+
+### Roadmap, conteúdo e Git
+
+Respeite o roadmap: não avance conteúdo do jogo, ISO, XEX, codegen ou runtime guest antes do Stage correspondente e não use dados do jogo como atalho para infraestrutura validável sem eles. `Runtime::Setup`, VM guest, fault e signal handling não podem ser ativados antecipadamente sem autorização. Não implemente UI bonita, Compose, Turnip ou otimizações antes de o runtime básico Android funcionar.
+
+O projeto aceita somente conteúdo legal do usuário. Além da regra global, nunca adicione ISO, `default.xex`, assets extraídos, conteúdo protegido, chaves ou dados semelhantes ao Git. No Stage adequado, receba conteúdo legalmente possuído em runtime ou fluxo definido; mantenha-o local, privado e ignorado, confirme o ignore do caminho e nunca use `git add -f` para contorná-lo.
+
+Antes e depois de mudanças, verifique `git status`; não sobrescreva trabalho não inspecionado. Nunca use `git clean -xfd`, `git reset --hard`, force push ou remoção grande sem autorização. Não faça push sem autorização, mantenha commits locais até ela e não misture mudanças não relacionadas em um commit. Antes de push ou PR, inspecione gatilhos de CI; se puder disparar build, testes, packaging, codegen ou outro workflow caro, informe quais workflows e peça autorização antes do push. Se CI caro iniciar sem autorização, tente cancelá-lo e registre em `docs/android-progress.md`.
+
+Mantenha `origin` em `https://github.com/Cyberlym/Project8Recomp` e `upstream` em `https://github.com/theokyr/Project8Recomp`; `main` permanece limpo seguindo `upstream/main`, e trabalho Android pertence a `android-port`.
+
+### Estado dinâmico e sessões futuras
+
+Estado momentâneo pertence a `docs/android-progress.md`: Stage, BUILD/DEVICE VERIFIED, blockers, testes físicos, hashes de APK, commits relevantes, decisões temporárias e próximo passo. Mantenha ali o diário técnico curto; conclusões de auditoria pertencem a `docs/android-audit.md`, não a este guia.
+
+Toda sessão futura deve ler este `AGENTS.md`, a parte relevante de `docs/android-progress.md`, identificar o objetivo e reutilizar evidência anterior, sem reiniciar investigação concluída, no menor escopo e custo possíveis. As regras valem até exceção explicitamente autorizada pelo usuário.
+
+Ao terminar cada etapa, informe arquivos alterados, comandos executados, descobertas, riscos e próximo passo recomendado.
